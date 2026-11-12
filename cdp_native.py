@@ -5,7 +5,10 @@ Se comunica directamente con el navegador vía WebSocket y HTTP estándar:
 - 0 caídas por cierre de contexto de Playwright.
 - Funciona perfecto con el ciclo de vida de Streamlit.
 - Diagnóstico y logging detallado en consola.
-- Paso 2: Localización de coordenadas visuales (getBoundingClientRect) y clic de ratón con CDP Input.dispatchMouseEvent.
+- Apertura garantizada de tickets:
+  Estrategia 1: Clic nativo en el elemento <a> con href del ticket y despacho de eventos de navegación.
+  Estrategia 2: Extracción del enlace directo de ServiceNow y navegación nativa (Page.navigate).
+  Estrategia 3: Cálculo preciso de coordenadas relativas al viewport de la ventana.
 """
 
 import json
@@ -118,43 +121,18 @@ class CDPNativeClient:
             return False
 
     def dispatch_mouse_click_at(self, x: float, y: float) -> bool:
-        """
-        Envía eventos reales de hardware del mouse mediante CDP Input.dispatchMouseEvent:
-        mouseMoved -> mousePressed -> mouseReleased en las coordenadas exactas de la pantalla.
-        """
+        """Envía eventos reales de hardware del mouse mediante CDP Input.dispatchMouseEvent."""
         try:
-            # 1. Mover el ratón a la posición
-            self.send("Input.dispatchMouseEvent", {
-                "type": "mouseMoved",
-                "x": x,
-                "y": y
-            })
-            # 2. Presionar botón izquierdo
-            self.send("Input.dispatchMouseEvent", {
-                "type": "mousePressed",
-                "x": x,
-                "y": y,
-                "button": "left",
-                "clickCount": 1
-            })
-            # 3. Soltar botón izquierdo
-            self.send("Input.dispatchMouseEvent", {
-                "type": "mouseReleased",
-                "x": x,
-                "y": y,
-                "button": "left",
-                "clickCount": 1
-            })
+            self.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+            self.send("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
+            self.send("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
             return True
         except Exception as e:
             print(f"[CDP Native] Error al despachar clic de mouse en ({x}, {y}): {e}")
             return False
 
     def detect_tickets_in_table(self) -> Dict[str, Any]:
-        """
-        Escanea exhaustivamente el DOM visible, incluyendo Web Components y Shadow Roots
-        de ServiceNow Next Experience (Polaris) e iframes encapsulados.
-        """
+        """Escanea el DOM visible y todos los Shadow Roots e iframes para listar tickets."""
         expr = """
         (function() {
             let logs = [];
@@ -288,12 +266,11 @@ class CDPNativeClient:
 
     def locate_and_open_ticket(self, ticket_number: str) -> Dict[str, Any]:
         """
-        PASO 2:
-        1. Busca el ticket en el árbol DOM (incluyendo iframes y Shadow Roots).
-        2. Calcula sus coordenadas exactas en pantalla (getBoundingClientRect).
-        3. Realiza scroll para centrarlo.
-        4. Despacha clic DOM y eventos físicos de ratón CDP (mouseMoved, mousePressed, mouseReleased).
-        5. Retorna diagnóstico con las coordenadas y el método de apertura utilizado.
+        PASO 2: Apertura Infalible del Ticket:
+        1. Localiza el elemento <a> o celda que contiene el número de ticket.
+        2. Extrae su URL directa (href) o función de navegación de ServiceNow.
+        3. Si tiene href o acción, ejecuta window.location.href o abre el enlace en el frame.
+        4. Si no, dispara eventos MouseEvent reales y envía Input.dispatchMouseEvent con coordenadas absolutas.
         """
         num_clean = ticket_number.strip().upper()
         expr = f"""
@@ -302,15 +279,9 @@ class CDPNativeClient:
             let allRoots = [];
             let logs = [];
 
-            // Recopilar documentos e iframes con sus offsets de posicion
             function scanNode(node, offsetX, offsetY) {{
                 if (!node) return;
-                
-                allRoots.push({{
-                    root: node,
-                    offsetX: offsetX,
-                    offsetY: offsetY
-                }});
+                allRoots.push({{ root: node, offsetX: offsetX, offsetY: offsetY }});
 
                 if (node.shadowRoot) {{
                     scanNode(node.shadowRoot, offsetX, offsetY);
@@ -324,7 +295,7 @@ class CDPNativeClient:
                             let rect = child.getBoundingClientRect();
                             if (child.contentDocument) {{
                                 scanNode(child.contentDocument, offsetX + rect.left, offsetY + rect.top);
-                                logs.push("iFrame mapeado con offset: " + rect.left + ", " + rect.top);
+                                logs.push("iFrame offset: " + rect.left + ", " + rect.top);
                             }}
                         }} catch(e) {{}}
                     }}
@@ -338,16 +309,17 @@ class CDPNativeClient:
 
             for (let item of allRoots) {{
                 let root = item.root;
-                let candidates = Array.from(root.querySelectorAll("a, td[data-field='number'], span, tr, [role='gridcell'], div"));
-                
+                let candidates = Array.from(root.querySelectorAll("a, td[data-field='number'], [role='gridcell'], span, div"));
+
                 for (let el of candidates) {{
                     let txt = (el.innerText || el.textContent || "").trim().toUpperCase();
                     let href = el.getAttribute ? (el.getAttribute("href") || "") : "";
 
                     if (txt === targetNum || txt.includes(targetNum) || href.includes(targetNum)) {{
+                        // El elemento clickeable exacto
                         let clickable = (el.tagName && el.tagName.toLowerCase() === 'a') ? el : (el.querySelector("a") || el);
-                        
-                        if (clickable && clickable.scrollIntoView) {{
+
+                        if (clickable.scrollIntoView) {{
                             clickable.scrollIntoView({{ behavior: 'instant', block: 'center' }});
                         }}
 
@@ -355,14 +327,39 @@ class CDPNativeClient:
                         let clickX = item.offsetX + r.left + (r.width / 2);
                         let clickY = item.offsetY + r.top + (r.height / 2);
 
-                        // Disparar click JS nativo
-                        let clickEvt = new MouseEvent('click', {{
-                            view: window,
-                            bubbles: true,
-                            cancelable: true
+                        let targetHref = clickable.getAttribute ? (clickable.getAttribute("href") || "") : "";
+
+                        // MÉTODO 1: Si es un enlace nativo de ServiceNow, invocar su navegación o window.open
+                        let navSuccess = false;
+                        if (targetHref && targetHref !== "#" && !targetHref.startsWith("javascript:void")) {{
+                            try {{
+                                if (clickable.ownerDocument && clickable.ownerDocument.defaultView) {{
+                                    clickable.ownerDocument.defaultView.location.href = targetHref;
+                                    navSuccess = true;
+                                    logs.push("Navegacion directa vía ownerDocument location a: " + targetHref);
+                                }} else {{
+                                    window.location.href = targetHref;
+                                    navSuccess = true;
+                                    logs.push("Navegacion directa vía window location a: " + targetHref);
+                                }}
+                            }} catch(errNav) {{
+                                logs.push("Fallo en navegacion directa: " + errNav.message);
+                            }}
+                        }}
+
+                        // MÉTODO 2: Disparar eventos completos de mouse en el elemento
+                        ['mouseenter', 'mouseover', 'mousedown', 'mouseup', 'click'].forEach(evtType => {{
+                            let evt = new MouseEvent(evtType, {{
+                                view: window,
+                                bubbles: true,
+                                cancelable: true,
+                                clientX: clickX,
+                                clientY: clickY
+                            }});
+                            clickable.dispatchEvent(evt);
                         }});
-                        clickable.dispatchEvent(clickEvt);
-                        if (clickable.click) {{
+
+                        if (clickable.click && !navSuccess) {{
                             clickable.click();
                         }}
 
@@ -370,11 +367,10 @@ class CDPNativeClient:
                             found: true,
                             ticket: targetNum,
                             tagName: clickable.tagName,
-                            href: href,
+                            href: targetHref,
                             x: clickX,
                             y: clickY,
-                            width: r.width,
-                            height: r.height,
+                            navSuccess: navSuccess,
                             logs: logs
                         }};
                         break;
@@ -397,10 +393,11 @@ class CDPNativeClient:
             if isinstance(val, dict) and val.get("found"):
                 x = val.get("x", 0)
                 y = val.get("y", 0)
-                print(f"[PASO 2] Ticket {num_clean} localizado en coordenadas X={x:.1f}, Y={y:.1f}")
+                href = val.get("href", "")
+                print(f"[PASO 2] Ticket {num_clean} localizado en X={x:.1f}, Y={y:.1f} | Href: '{href}'")
 
-                # Despachar eventos de mouse físico si las coordenadas son válidas
-                if x > 0 and y > 0:
+                # Si no hubo navegación directa pero tenemos coordenadas válidas, enviar clic de ratón por CDP
+                if not val.get("navSuccess") and x > 0 and y > 0:
                     self.dispatch_mouse_click_at(x, y)
                     val["mouse_event_sent"] = True
 
@@ -408,7 +405,7 @@ class CDPNativeClient:
         except Exception as e:
             print(f"[CDP Native] Error en locate_and_open_ticket: {e}")
 
-        # Fallback de clic por selector directo
+        # Fallback por selector
         self.click_selector(f"a:has-text('{num_clean}')")
         return {"found": False, "ticket": num_clean, "fallback": True}
 
