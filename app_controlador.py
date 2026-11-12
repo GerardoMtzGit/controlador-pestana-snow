@@ -1,11 +1,11 @@
 """
 app_controlador.py
 Interfaz interactiva y clara para seleccionar y controlar pestañas de ServiceNow.
-Incluye Feature Paso 1 Mejorada:
-- Escaneo con diagnóstico en consola y vista del log en pantalla.
-- Detección del estado del Queue (ej. '1 to 2 of 2') y cantidad total de tickets.
-- Botón automático que escanea y abre de inmediato el PRIMER ticket que esté hasta arriba.
-- Conexión CDP nativa ultra estable sin caídas.
+Incluye Feature Paso 2:
+- Eliminación del botón ambiguo de apertura anterior.
+- Buscador inteligente de ticket por número/nombre.
+- Localización precisa del elemento en pantalla y posicionamiento del cursor con CDP Input.dispatchMouseEvent.
+- Apertura automática de ticket individual o por búsqueda.
 """
 
 import os
@@ -109,7 +109,7 @@ st.markdown("""
 <div class="se-banner">
     <h2 style="margin:0; font-size:1.4rem; font-weight:700;">⚡ Controlador Directo de Pestaña ServiceNow</h2>
     <p style="margin:4px 0 0 0; font-size:0.88rem; color:#cbd5e1;">
-        Paso 1: Conteo del Queue y Apertura del Primer Ticket en la Columna <strong>Number</strong>.
+        Paso 2: Búsqueda del ticket, posicionamiento de Mouse en la columna <strong>Number</strong> y apertura.
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -216,8 +216,8 @@ with st.sidebar:
 col_ctrl, col_view = st.columns([1, 1], gap="medium")
 
 with col_ctrl:
-    # ================= FEATURE PASO 1: ABRIR TICKETS EN COLUMNA NUMBER =================
-    st.markdown("### 🎫 Paso 1: Conteo del Queue y Apertura de Ticket")
+    # ================= FEATURE: PASO 2 - ESCANEAR Y ABRIR EL TICKET =================
+    st.markdown("### 🎯 Paso 2: Escanear y Abrir el Ticket")
 
     # Banner con información del Queue
     if st.session_state.queue_summary_text:
@@ -227,48 +227,58 @@ with col_ctrl:
         </div>
         """, unsafe_allow_html=True)
 
-    col_btn_detect, col_btn_auto = st.columns([1, 1])
-    with col_btn_detect:
-        if st.button("🔍 Escanear Tickets en la Tabla", type="secondary", use_container_width=True):
-            diag = controller.scan_tickets_with_diagnostics()
-            st.session_state.detected_tickets = diag.get("tickets", [])
-            st.session_state.queue_summary_text = diag.get("totalQueueText", "")
-            st.session_state.last_scan_logs = diag.get("logs", [])
-            st.session_state.last_action_msg = f"Escaneo: {len(st.session_state.detected_tickets)} ticket(s) encontrados ({st.session_state.queue_summary_text})"
-            st.rerun()
+    # 1. BOTÓN PRINCIPAL: ESCANEAR TICKETS
+    if st.button("🔍 Escanear Tickets en la Tabla", type="primary", use_container_width=True):
+        diag = controller.scan_tickets_with_diagnostics()
+        st.session_state.detected_tickets = diag.get("tickets", [])
+        st.session_state.queue_summary_text = diag.get("totalQueueText", "")
+        st.session_state.last_scan_logs = diag.get("logs", [])
+        st.session_state.last_action_msg = f"Escaneo: {len(st.session_state.detected_tickets)} ticket(s) encontrados ({st.session_state.queue_summary_text})"
+        st.rerun()
 
-    with col_btn_auto:
-        # Botón para escanear y abrir automáticamente el primero
-        if st.button("🚀 Escanear y Abrir el Primer Ticket", type="primary", use_container_width=True):
-            diag = controller.scan_tickets_with_diagnostics()
-            st.session_state.detected_tickets = diag.get("tickets", [])
-            st.session_state.queue_summary_text = diag.get("totalQueueText", "")
-            st.session_state.last_scan_logs = diag.get("logs", [])
+    # 2. FUNCIÓN DE BÚSQUEDA Y APERTURA DIRECTA CON POSICIONAMIENTO DE MOUSE
+    st.markdown("#### 🔎 Búsqueda y Posicionamiento de Mouse")
+    col_search_inp, col_search_btn = st.columns([2, 1])
 
-            if st.session_state.detected_tickets:
-                first_ticket = st.session_state.detected_tickets[0]["number"]
-                ok = controller.open_ticket(first_ticket)
-                st.session_state.last_action_msg = f"¡Abriendo ticket {first_ticket} en columna Number!"
-                st.success(f"Abriendo {first_ticket}...")
-                time.sleep(0.5)
-            else:
-                st.warning("No se encontraron registros de tickets en la vista actual.")
-            st.rerun()
+    # Sugerir el primer ticket detectado si existe
+    suggested_val = st.session_state.detected_tickets[0]["number"] if st.session_state.detected_tickets else ""
 
-    # Si hay registros, listarlos
+    with col_search_inp:
+        search_num = st.text_input(
+            "Ingresa el número de ticket:",
+            value=suggested_val,
+            placeholder="Ej: SCTASK5214212 o INC3446174",
+            label_visibility="collapsed"
+        )
+
+    with col_search_btn:
+        if st.button("🖱️ Buscar y Abrir", type="primary", use_container_width=True):
+            if search_num.strip():
+                with st.spinner(f"Buscando {search_num} y posicionando mouse..."):
+                    res = controller.locate_and_open_ticket(search_num.strip())
+                    if res.get("found"):
+                        st.session_state.last_action_msg = f"Mouse posicionado en X={res.get('x',0):.1f}, Y={res.get('y',0):.1f} para abrir {search_num}"
+                        st.success(f"¡Ticket {search_num} encontrado y abierto!")
+                    else:
+                        st.session_state.last_action_msg = f"Ticket {search_num} abierto mediante fallback"
+                        st.info(f"Clic enviado para {search_num}")
+                    time.sleep(0.5)
+                    st.rerun()
+
+    # 3. LISTA DE TICKETS CON BOTÓN DE POSICIONAMIENTO INDIVIDUAL
     if st.session_state.detected_tickets:
-        st.markdown(f"**Tickets visibles detectados:** `{len(st.session_state.detected_tickets)}`")
+        st.markdown(f"**Tickets disponibles en la tabla (`{len(st.session_state.detected_tickets)}`):**")
         for idx, t in enumerate(st.session_state.detected_tickets):
             t_num = t["number"]
             t_desc = t.get("description", "Sin descripción")
             is_first = (idx == 0)
-            
+
             with st.container():
                 st.markdown(f"""
-                <div class="ticket-box" style="{'border-left: 5px solid #2563eb; background:#f8fafc;' if is_first else ''}">
+                <div class="ticket-box" style="{'border-left: 5px solid #009530; background:#f0fdf4;' if is_first else ''}">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <span style="font-weight:700; color:#0f172a; font-size:1.05rem;">
-                            {'🥇 (Primero) ' if is_first else ''}🎯 {t_num}
+                            {'🥇 [Primero en Queue] ' if is_first else ''}🎯 {t_num}
                         </span>
                         <span style="font-size:0.75rem; background:#dcfce7; color:#166534; padding:2px 8px; border-radius:4px; font-weight:700;">Columna Number</span>
                     </div>
@@ -278,14 +288,18 @@ with col_ctrl:
                 </div>
                 """, unsafe_allow_html=True)
 
-                if st.button(f"👉 Abrir {t_num}", key=f"btn_open_{t_num}_{idx}", use_container_width=True):
-                    ok = controller.open_ticket(t_num)
-                    st.session_state.last_action_msg = f"Clic en columna Number para abrir: {t_num}"
-                    st.success(f"¡Abriendo ticket {t_num}!")
-                    time.sleep(0.5)
-                    st.rerun()
+                if st.button(f"🖱️ Posicionar Mouse y Abrir {t_num}", key=f"btn_open_pos_{t_num}_{idx}", use_container_width=True):
+                    with st.spinner(f"Posicionando mouse en {t_num}..."):
+                        res = controller.locate_and_open_ticket(t_num)
+                        if res.get("found"):
+                            st.session_state.last_action_msg = f"Mouse posicionado en X={res.get('x',0):.1f}, Y={res.get('y',0):.1f} sobre {t_num}"
+                            st.success(f"¡Ticket {t_num} abierto exitosamente!")
+                        else:
+                            st.session_state.last_action_msg = f"Clic enviado a {t_num}"
+                        time.sleep(0.5)
+                        st.rerun()
     else:
-        st.info("💡 Haz clic en **'Escanear Tickets en la Tabla'** o **'Escanear y Abrir el Primer Ticket'** para procesar la lista.")
+        st.info("💡 Haz clic en **'🔍 Escanear Tickets en la Tabla'** para listar los registros detectados en tu cola.")
 
     # Acordeón opcional de diagnóstico/logs de escaneo en la interfaz
     if st.session_state.last_scan_logs:

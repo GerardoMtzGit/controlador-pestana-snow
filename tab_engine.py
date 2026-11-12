@@ -1,7 +1,7 @@
 """
 tab_engine.py
 Motor híbrido de descubrimiento y control de pestañas vía Chrome DevTools Protocol (CDP).
-Arquitectura ultra resiliente con detección, logging y apertura automática de tickets.
+Incluye Feature Paso 2: Escaneo y apertura mediante posicionamiento de Mouse en coordenadas visuales reales.
 """
 
 import json
@@ -152,19 +152,29 @@ class CDPBrowserController:
 
         return diag
 
-    def open_ticket(self, ticket_number: str) -> bool:
-        """Ubica el ticket en la columna Number y hace clic para abrirlo."""
-        print(f"🎯 [ACCIÓN] Solicitando abrir ticket {ticket_number}...")
+    def locate_and_open_ticket(self, ticket_number: str) -> Dict[str, Any]:
+        """
+        PASO 2:
+        Busca el ticket por su número exacto en pantalla, posiciona el mouse sobre él
+        mediante CDP Input.dispatchMouseEvent y lo abre.
+        """
+        print(f"\n🎯 [PASO 2: POSICIONAR MOUSE Y ABRIR TICKET] {ticket_number}")
         client = self._get_active_native_client()
         if not client:
             print("[ERROR] Cliente no disponible.")
-            return False
+            return {"found": False, "error": "Cliente no disponible"}
 
-        success = client.open_ticket_by_number(ticket_number)
-        print(f"  ✓ Resultado del clic: {'Éxito' if success else 'Falló'}")
+        result = client.locate_and_open_ticket(ticket_number)
+        
+        if result.get("found"):
+            print(f"  ✓ Posición del Mouse: X={result.get('x', 0):.1f}, Y={result.get('y', 0):.1f}")
+            print(f"  ✓ Eventos de Mouse físico despachados con éxito.")
+        else:
+            print(f"  ⚠️ No se pudieron calcular coordenadas visuales directas. Usando fallback de selección.")
+
         time.sleep(1.2)
         self.take_screenshot()
-        return success
+        return result
 
     def scroll(self, direction: str = "down", amount: int = 400) -> bool:
         """Realiza scroll hacia arriba o hacia abajo en la pestaña activa."""

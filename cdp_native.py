@@ -5,7 +5,7 @@ Se comunica directamente con el navegador vía WebSocket y HTTP estándar:
 - 0 caídas por cierre de contexto de Playwright.
 - Funciona perfecto con el ciclo de vida de Streamlit.
 - Diagnóstico y logging detallado en consola.
-- Escaneo profundo multietapa: DOM principal, iframes anidados (gsft_main), Web Components con Shadow DOM.
+- Paso 2: Localización de coordenadas visuales (getBoundingClientRect) y clic de ratón con CDP Input.dispatchMouseEvent.
 """
 
 import json
@@ -117,9 +117,42 @@ class CDPNativeClient:
             print(f"[CDP Native] Error al hacer click: {e}")
             return False
 
+    def dispatch_mouse_click_at(self, x: float, y: float) -> bool:
+        """
+        Envía eventos reales de hardware del mouse mediante CDP Input.dispatchMouseEvent:
+        mouseMoved -> mousePressed -> mouseReleased en las coordenadas exactas de la pantalla.
+        """
+        try:
+            # 1. Mover el ratón a la posición
+            self.send("Input.dispatchMouseEvent", {
+                "type": "mouseMoved",
+                "x": x,
+                "y": y
+            })
+            # 2. Presionar botón izquierdo
+            self.send("Input.dispatchMouseEvent", {
+                "type": "mousePressed",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "clickCount": 1
+            })
+            # 3. Soltar botón izquierdo
+            self.send("Input.dispatchMouseEvent", {
+                "type": "mouseReleased",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "clickCount": 1
+            })
+            return True
+        except Exception as e:
+            print(f"[CDP Native] Error al despachar clic de mouse en ({x}, {y}): {e}")
+            return False
+
     def detect_tickets_in_table(self) -> Dict[str, Any]:
         """
-        Escanea exhaustivamente el DOM visible, incluyendo todos los Web Components y Shadow Roots
+        Escanea exhaustivamente el DOM visible, incluyendo Web Components y Shadow Roots
         de ServiceNow Next Experience (Polaris) e iframes encapsulados.
         """
         expr = """
@@ -227,7 +260,6 @@ class CDPNativeClient:
         """
         try:
             res = self.send("Runtime.evaluate", {"expression": expr, "returnByValue": True})
-            # En CDP, la respuesta viene en res['result']['result']['value'] (o res['result']['value'])
             result_obj = res.get("result", {})
             val = result_obj.get("value")
             if val is None and isinstance(result_obj.get("result"), dict):
@@ -254,71 +286,105 @@ class CDPNativeClient:
                 "logs": [f"Error ejecutando script de escaneo: {ex}"]
             }
 
-    def open_ticket_by_number(self, ticket_number: str) -> bool:
+    def locate_and_open_ticket(self, ticket_number: str) -> Dict[str, Any]:
         """
-        Ubica la celda o enlace correspondiente al ticket en la columna Number
-        (incluso dentro de Shadow DOM o iframes como gsft_main) y hace clic para abrirlo.
+        PASO 2:
+        1. Busca el ticket en el árbol DOM (incluyendo iframes y Shadow Roots).
+        2. Calcula sus coordenadas exactas en pantalla (getBoundingClientRect).
+        3. Realiza scroll para centrarlo.
+        4. Despacha clic DOM y eventos físicos de ratón CDP (mouseMoved, mousePressed, mouseReleased).
+        5. Retorna diagnóstico con las coordenadas y el método de apertura utilizado.
         """
         num_clean = ticket_number.strip().upper()
         expr = f"""
         (function() {{
             let targetNum = "{num_clean}";
-            let allRoots = [document];
+            let allRoots = [];
+            let logs = [];
 
-            function collectShadowRoots(node) {{
+            // Recopilar documentos e iframes con sus offsets de posicion
+            function scanNode(node, offsetX, offsetY) {{
                 if (!node) return;
+                
+                allRoots.push({{
+                    root: node,
+                    offsetX: offsetX,
+                    offsetY: offsetY
+                }});
+
                 if (node.shadowRoot) {{
-                    allRoots.push(node.shadowRoot);
-                    collectShadowRoots(node.shadowRoot);
+                    scanNode(node.shadowRoot, offsetX, offsetY);
                 }}
+
                 let children = node.children || [];
                 for (let i = 0; i < children.length; i++) {{
                     let child = children[i];
                     if (child.tagName && child.tagName.toLowerCase() === 'iframe') {{
                         try {{
+                            let rect = child.getBoundingClientRect();
                             if (child.contentDocument) {{
-                                allRoots.push(child.contentDocument);
-                                collectShadowRoots(child.contentDocument.body);
+                                scanNode(child.contentDocument, offsetX + rect.left, offsetY + rect.top);
+                                logs.push("iFrame mapeado con offset: " + rect.left + ", " + rect.top);
                             }}
                         }} catch(e) {{}}
                     }}
-                    collectShadowRoots(child);
+                    scanNode(child, offsetX, offsetY);
                 }}
             }}
 
-            collectShadowRoots(document.body || document.documentElement);
+            scanNode(document.body || document.documentElement, 0, 0);
 
-            for (let root of allRoots) {{
-                // Buscar enlaces o celdas con el texto del ticket
+            let bestMatch = null;
+
+            for (let item of allRoots) {{
+                let root = item.root;
                 let candidates = Array.from(root.querySelectorAll("a, td[data-field='number'], span, tr, [role='gridcell'], div"));
+                
                 for (let el of candidates) {{
                     let txt = (el.innerText || el.textContent || "").trim().toUpperCase();
                     let href = el.getAttribute ? (el.getAttribute("href") || "") : "";
-                    
+
                     if (txt === targetNum || txt.includes(targetNum) || href.includes(targetNum)) {{
-                        // Priorizar el enlace <a> si está adentro o es él mismo
                         let clickable = (el.tagName && el.tagName.toLowerCase() === 'a') ? el : (el.querySelector("a") || el);
                         
-                        if (clickable.scrollIntoView) {{
-                            clickable.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                        if (clickable && clickable.scrollIntoView) {{
+                            clickable.scrollIntoView({{ behavior: 'instant', block: 'center' }});
                         }}
-                        
-                        // Disparar evento de click nativo
-                        let clickEvent = new MouseEvent('click', {{
+
+                        let r = clickable.getBoundingClientRect();
+                        let clickX = item.offsetX + r.left + (r.width / 2);
+                        let clickY = item.offsetY + r.top + (r.height / 2);
+
+                        // Disparar click JS nativo
+                        let clickEvt = new MouseEvent('click', {{
                             view: window,
                             bubbles: true,
                             cancelable: true
                         }});
-                        clickable.dispatchEvent(clickEvent);
-                        
+                        clickable.dispatchEvent(clickEvt);
                         if (clickable.click) {{
                             clickable.click();
                         }}
-                        return true;
+
+                        bestMatch = {{
+                            found: true,
+                            ticket: targetNum,
+                            tagName: clickable.tagName,
+                            href: href,
+                            x: clickX,
+                            y: clickY,
+                            width: r.width,
+                            height: r.height,
+                            logs: logs
+                        }};
+                        break;
                     }}
                 }}
+                if (bestMatch) break;
             }}
-            return false;
+
+            if (bestMatch) return bestMatch;
+            return {{ found: false, ticket: targetNum, logs: logs }};
         }})();
         """
         try:
@@ -328,13 +394,23 @@ class CDPNativeClient:
             if val is None and isinstance(result_obj.get("result"), dict):
                 val = result_obj["result"].get("value")
 
-            if val is True:
-                return True
-        except Exception as e:
-            print(f"[CDP Native] Error al abrir ticket {ticket_number}: {e}")
+            if isinstance(val, dict) and val.get("found"):
+                x = val.get("x", 0)
+                y = val.get("y", 0)
+                print(f"[PASO 2] Ticket {num_clean} localizado en coordenadas X={x:.1f}, Y={y:.1f}")
 
-        # Fallback
-        return self.click_selector(f"a:has-text('{num_clean}')") or self.click_selector(num_clean)
+                # Despachar eventos de mouse físico si las coordenadas son válidas
+                if x > 0 and y > 0:
+                    self.dispatch_mouse_click_at(x, y)
+                    val["mouse_event_sent"] = True
+
+                return val
+        except Exception as e:
+            print(f"[CDP Native] Error en locate_and_open_ticket: {e}")
+
+        # Fallback de clic por selector directo
+        self.click_selector(f"a:has-text('{num_clean}')")
+        return {"found": False, "ticket": num_clean, "fallback": True}
 
     def reload(self) -> bool:
         """Recarga la pestaña."""
