@@ -1,13 +1,11 @@
 @echo off
-title Iniciar Chrome con Depuracion Remota (Puerto 9222)
+title Iniciar Chrome para Controlador de Pestanas (Puerto 9222)
 echo ============================================================
 echo   Iniciando Chrome con Puerto de Depuracion Remota 9222
-echo   (Permite conectar el Asignador y Controlador de Pestanas)
 echo ============================================================
 echo.
 
 set CHROME_PATH=""
-
 if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" (
     set CHROME_PATH="C:\Program Files\Google\Chrome\Application\chrome.exe"
 ) else if exist "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" (
@@ -24,11 +22,16 @@ if %CHROME_PATH%=="" (
     exit /b 1
 )
 
-echo Abriendo navegador con --remote-debugging-port=9222 ...
-start "" %CHROME_PATH% --remote-debugging-port=9222 --remote-allow-origins=*
+:: Usar un directorio de perfil dedicado para depuración para evitar conflicto si Chrome ya está abierto
+set USER_DATA_DIR="%LOCALAPPDATA%\Google\Chrome\User Data Debug"
 
+echo Abriendo navegador en puerto 9222...
+echo Ruta: %CHROME_PATH%
+echo Datos: %USER_DATA_DIR%
 echo.
-echo Listo. Ya puedes abrir ServiceNow o cualquier otra pestana y seleccionarla en tu programa.
-timeout /t 3 >nul
-exit /b 0
 
+start "" %CHROME_PATH% --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=%USER_DATA_DIR%
+
+echo Listo. El navegador se ha iniciado escuchando en el puerto 9222.
+timeout /t 2 >nul
+exit /b 0

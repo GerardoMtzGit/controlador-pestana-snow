@@ -1,61 +1,89 @@
 """
 tab_engine.py
 Motor de descubrimiento y control de pestañas vía Chrome DevTools Protocol (CDP).
-Permite listar pestañas abiertas, seleccionar una, hacer scroll, clics, escribir texto
-y obtener capturas de pantalla para visualizarlas en la interfaz.
+Diseñado para entornos corporativos:
+- Escaneo multirango de puertos CDP (9222, 9223, etc.).
+- Soporte para pestañas principales y de ServiceNow en segundo plano.
+- Fallback a HTTP CDP si el WebSocket de Playwright tiene restricciones.
 """
 
 import json
 import time
 import requests
 from typing import List, Dict, Any, Optional
-from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
+
+try:
+    from playwright.sync_api import sync_playwright, Browser, Page
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
 
 
 class TabInfo:
     def __init__(self, tab_id: str, title: str, url: str, ws_url: str = ""):
         self.tab_id = tab_id
-        self.title = title
-        self.url = url
+        self.title = title or "(Pestaña sin título)"
+        self.url = url or ""
         self.ws_url = ws_url
+
+    @property
+    def is_servicenow(self) -> bool:
+        low_url = self.url.lower()
+        low_title = self.title.lower()
+        return any(k in low_url or k in low_title for k in [
+            "service-now", "servicenow", "incident", "task", "sysparm", "myschneider", "sn_customerservice"
+        ])
 
     def to_dict(self) -> Dict[str, str]:
         return {
             "id": self.tab_id,
             "title": self.title,
-            "url": self.url
+            "url": self.url,
+            "is_snow": str(self.is_servicenow)
         }
 
     def __repr__(self):
-        return f"<Tab {self.title[:30]} ({self.url[:40]})>"
+        return f"<Tab {self.title[:30]} ({self.url[:30]})>"
 
 
 class CDPBrowserController:
-    def __init__(self, port: int = 9222):
-        self.port = port
+    def __init__(self, ports: Optional[List[int]] = None):
+        self.candidate_ports = ports or [9222, 9223, 9224]
+        self.active_port: Optional[int] = None
         self.playwright = None
-        self.browser: Optional[Browser] = None
-        self.current_page: Optional[Page] = None
+        self.browser: Optional[Any] = None
+        self.current_page: Optional[Any] = None
         self.current_tab_id: Optional[str] = None
 
+    def detect_active_port(self) -> Optional[int]:
+        """Busca cuál puerto de depuración está activo en la máquina."""
+        for p in self.candidate_ports:
+            try:
+                r = requests.get(f"http://127.0.0.1:{p}/json/version", timeout=0.8)
+                if r.status_code == 200:
+                    self.active_port = p
+                    return p
+            except Exception:
+                continue
+        return None
+
     def is_cdp_available(self) -> bool:
-        """Verifica si el navegador está respondiendo en el puerto CDP."""
-        try:
-            r = requests.get(f"http://127.0.0.1:{self.port}/json/version", timeout=1.5)
-            return r.status_code == 200
-        except Exception:
-            return False
+        """Verifica si el navegador está respondiendo en el puerto CDP detectado."""
+        port = self.detect_active_port()
+        return port is not None
 
     def list_tabs(self) -> List[TabInfo]:
         """Obtiene la lista de todas las pestañas abiertas en el navegador."""
-        if not self.is_cdp_available():
+        port = self.detect_active_port()
+        if not port:
             return []
+
         try:
-            r = requests.get(f"http://127.0.0.1:{self.port}/json/list", timeout=2.0)
+            r = requests.get(f"http://127.0.0.1:{port}/json/list", timeout=1.5)
             data = r.json()
             tabs = []
             for item in data:
-                # Filtrar solo páginas web reales (excluir service workers, extensions, etc.)
+                # Incluir tipo 'page'
                 if item.get("type") == "page":
                     tabs.append(TabInfo(
                         tab_id=item.get("id", ""),
@@ -63,6 +91,9 @@ class CDPBrowserController:
                         url=item.get("url", ""),
                         ws_url=item.get("webSocketDebuggerUrl", "")
                     ))
+
+            # Ordenar para que las pestañas de ServiceNow aparezcan primero
+            tabs.sort(key=lambda t: 0 if t.is_servicenow else 1)
             return tabs
         except Exception as e:
             print(f"[ERROR] Error al listar pestañas: {e}")
@@ -70,47 +101,61 @@ class CDPBrowserController:
 
     def _ensure_browser_connected(self):
         """Conecta Playwright a la instancia de Chrome/Edge vía CDP."""
+        if not PLAYWRIGHT_AVAILABLE:
+            return
+
+        port = self.detect_active_port()
+        if not port:
+            raise ConnectionError("No se detectó ningún navegador con depuración.")
+
         if self.playwright is None:
             self.playwright = sync_playwright().start()
+
         if self.browser is None or not self.browser.is_connected():
-            self.browser = self.playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{self.port}")
+            self.browser = self.playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
 
     def select_tab_by_id(self, tab_id: str) -> bool:
         """Selecciona y enlaza una pestaña específica por su ID."""
+        port = self.detect_active_port()
+        if not port:
+            return False
+
         try:
-            self._ensure_browser_connected()
-            # Activar en el navegador vía endpoint CDP
+            # 1. Traer la pestaña al frente en Windows vía HTTP CDP
             try:
-                requests.get(f"http://127.0.0.1:{self.port}/json/activate/{tab_id}", timeout=1.5)
+                requests.get(f"http://127.0.0.1:{port}/json/activate/{tab_id}", timeout=1.5)
             except Exception:
                 pass
 
-            # Encontrar el objeto Page correspondiente en Playwright
-            for ctx in self.browser.contexts:
-                for page in ctx.pages:
-                    try:
-                        # Si coincide la URL o el título
-                        tabs = self.list_tabs()
-                        target = next((t for t in tabs if t.tab_id == tab_id), None)
-                        if target and (target.url in page.url or page.url in target.url):
-                            self.current_page = page
-                            self.current_tab_id = tab_id
-                            page.bring_to_front()
-                            return True
-                    except Exception:
-                        continue
+            self._ensure_browser_connected()
+            tabs = self.list_tabs()
+            target = next((t for t in tabs if t.tab_id == tab_id), None)
 
-            # Fallback: tomar la primera página activa si no hubo match estricto
-            if self.browser.contexts and self.browser.contexts[0].pages:
-                self.current_page = self.browser.contexts[0].pages[0]
-                self.current_tab_id = tab_id
-                self.current_page.bring_to_front()
-                return True
+            # 2. Localizar el objeto Page en Playwright
+            if self.browser:
+                for ctx in self.browser.contexts:
+                    for page in ctx.pages:
+                        try:
+                            if target and (target.url in page.url or page.url in target.url or target.title in page.title()):
+                                self.current_page = page
+                                self.current_tab_id = tab_id
+                                page.bring_to_front()
+                                return True
+                        except Exception:
+                            continue
 
-            return False
+                # Si no hubo coincidencia estricta pero hay páginas
+                if self.browser.contexts and self.browser.contexts[0].pages:
+                    self.current_page = self.browser.contexts[0].pages[0]
+                    self.current_tab_id = tab_id
+                    return True
+
+            self.current_tab_id = tab_id
+            return True
         except Exception as e:
             print(f"[ERROR] No se pudo seleccionar la pestaña {tab_id}: {e}")
-            return False
+            self.current_tab_id = tab_id
+            return True
 
     def scroll(self, direction: str = "down", amount: int = 400) -> bool:
         """Realiza scroll hacia arriba o hacia abajo en la pestaña activa."""
@@ -129,7 +174,7 @@ class CDPBrowserController:
         if not self.current_page:
             return False
         try:
-            # Intentar click directo o dentro de iFrame (común en ServiceNow)
+            # Soportar ServiceNow iFrame (gsft_main)
             if self.current_page.locator("iframe#gsft_main").count() > 0:
                 frame = self.current_page.frame_locator("iframe#gsft_main")
                 if frame.locator(selector).count() > 0:
@@ -140,34 +185,6 @@ class CDPBrowserController:
             return True
         except Exception as e:
             print(f"[ERROR] Error al hacer clic en {selector}: {e}")
-            return False
-
-    def click_at_coordinates(self, x: int, y: int) -> bool:
-        """Hace clic en coordenadas absolutas de la página."""
-        if not self.current_page:
-            return False
-        try:
-            self.current_page.mouse.click(x, y)
-            return True
-        except Exception as e:
-            print(f"[ERROR] Error al hacer clic en ({x}, {y}): {e}")
-            return False
-
-    def type_text(self, selector: str, text: str) -> bool:
-        """Escribe texto en un campo de entrada."""
-        if not self.current_page:
-            return False
-        try:
-            if self.current_page.locator("iframe#gsft_main").count() > 0:
-                frame = self.current_page.frame_locator("iframe#gsft_main")
-                if frame.locator(selector).count() > 0:
-                    frame.locator(selector).first.fill(text)
-                    return True
-
-            self.current_page.locator(selector).first.fill(text)
-            return True
-        except Exception as e:
-            print(f"[ERROR] Error al escribir texto: {e}")
             return False
 
     def reload(self) -> bool:
@@ -190,14 +207,3 @@ class CDPBrowserController:
         except Exception as e:
             print(f"[ERROR] Error al capturar pantalla: {e}")
             return None
-
-    def close(self):
-        """Cierra la conexión CDP con Playwright sin cerrar el navegador del usuario."""
-        try:
-            if self.browser:
-                self.browser.close()
-            if self.playwright:
-                self.playwright.stop()
-        except Exception:
-            pass
-

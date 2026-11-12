@@ -1,12 +1,12 @@
 """
 app_controlador.py
-Interfaz limpia y minimalista en Streamlit para seleccionar y controlar pestañas de navegador.
-Permite:
-- Ver todas las pestañas abiertas en tiempo real (con título y URL).
-- Seleccionar una pestaña (ej. ServiceNow).
-- Mover la pestaña (Scroll Arriba / Abajo, Click en botones, Recargar).
-- Vista previa en vivo con captura de pantalla.
-- Comando inteligente con modelos de Hugging Face o Motor Local Determinista.
+Interfaz interactiva y clara para seleccionar y controlar pestañas de ServiceNow.
+Incluye:
+- Detección visual y botón directo '⚡ Seleccionar pestaña de ServiceNow'.
+- Lista de pestañas clasificadas con icono distintivo para ServiceNow.
+- Modo Asistente de Conexión si el puerto no responde (abrir con 1 clic).
+- Controles de movimiento: Scroll, Clics en Notas y Guardado.
+- Vista previa de la pestaña en tiempo real.
 """
 
 import os
@@ -15,20 +15,20 @@ import subprocess
 from io import BytesIO
 from PIL import Image
 import streamlit as st
-from tab_engine import CDPBrowserController
+from tab_engine import CDPBrowserController, TabInfo
 from agent_bridge import HuggingFaceTabAgent
 
 
 st.set_page_config(
-    page_title="Controlador de Pestañas | ServiceNow",
-    page_icon="🎯",
+    page_title="Controlador de Pestañas ServiceNow",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Inicializar estado de sesión
+# Inicializar sesión
 if "controller" not in st.session_state:
-    st.session_state.controller = CDPBrowserController(port=9222)
+    st.session_state.controller = CDPBrowserController()
 
 if "agent" not in st.session_state:
     st.session_state.agent = HuggingFaceTabAgent(mode="local_rules")
@@ -37,162 +37,166 @@ if "selected_tab_id" not in st.session_state:
     st.session_state.selected_tab_id = None
 
 if "last_action_msg" not in st.session_state:
-    st.session_state.last_action_msg = "Listo para conectar"
+    st.session_state.last_action_msg = "Listo para operar"
 
 controller: CDPBrowserController = st.session_state.controller
 agent: HuggingFaceTabAgent = st.session_state.agent
 
-# Estilos CSS limpios
+# Estilos CSS
 st.markdown("""
 <style>
-    .header-box {
-        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-        padding: 16px 20px;
+    .se-banner {
+        background: linear-gradient(90deg, #0f172a 0%, #1e293b 100%);
+        padding: 16px 22px;
         border-radius: 10px;
         color: white;
         margin-bottom: 20px;
-        border-left: 5px solid #2563eb;
+        border-left: 5px solid #009530;
     }
-    .status-badge {
+    .badge {
         display: inline-block;
         padding: 4px 10px;
         border-radius: 20px;
-        font-size: 0.82rem;
+        font-size: 0.8rem;
         font-weight: 600;
     }
-    .status-ok { background: #dcfce7; color: #15803d; }
-    .status-warn { background: #fef3c7; color: #b45309; }
-    .status-info { background: #e0f2fe; color: #0369a1; }
+    .badge-ok { background: #dcfce7; color: #166534; }
+    .badge-warn { background: #fef3c7; color: #92400e; }
+    .snow-tab-card {
+        background: #f0fdf4;
+        border: 1px solid #bbf7d0;
+        padding: 10px;
+        border-radius: 8px;
+        margin-bottom: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Encabezado
+# Banner Principal
 st.markdown("""
-<div class="header-box">
-    <h2 style="margin:0; font-size:1.5rem; font-weight:700;">🎯 Controlador de Pestañas Web (ServiceNow / Chrome)</h2>
-    <p style="margin:4px 0 0 0; font-size:0.9rem; color:#94a3b8;">
-        Controla y mueve la pestaña seleccionada directamente desde esta interfaz con <strong>Hugging Face / Motor Local</strong>.
+<div class="se-banner">
+    <h2 style="margin:0; font-size:1.4rem; font-weight:700;">⚡ Controlador Directo de Pestaña ServiceNow</h2>
+    <p style="margin:4px 0 0 0; font-size:0.88rem; color:#cbd5e1;">
+        Selecciona tu pestaña de ServiceNow en el panel izquierdo y muévela, haz scroll o interactúa con ella desde aquí.
     </p>
 </div>
 """, unsafe_allow_html=True)
 
-# SIDEBAR: Conexión, Configuración de IA y Selección de Pestañas
+
+# ================= SIDEBAR: LISTA Y SELECCIÓN DE PESTAÑAS =================
 with st.sidebar:
-    st.header("🔌 Conexión de Navegador")
+    st.header("📑 Selección de Pestaña")
+
     is_connected = controller.is_cdp_available()
+    active_port = controller.active_port or 9222
 
     if is_connected:
-        st.markdown('<span class="status-badge status-ok">● Navegador Detectado (Puerto 9222)</span>', unsafe_allow_html=True)
+        st.markdown(f'<span class="badge badge-ok">● Navegador Conectado (Puerto {active_port})</span>', unsafe_allow_html=True)
     else:
-        st.markdown('<span class="status-badge status-warn">▲ Navegador Desconectado</span>', unsafe_allow_html=True)
-        st.info("Para conectar tu navegador sin cerrar sesión, inicia Chrome con depuración:")
-        if st.button("🚀 Iniciar Navegador con Depuración", use_container_width=True):
+        st.markdown('<span class="badge badge-warn">▲ Navegador no detectado</span>', unsafe_allow_html=True)
+        st.warning(
+            "Chrome no se inició con el puerto de depuración abierto. "
+            "Haz clic en el botón de abajo para abrir una ventana lista para conectar:"
+        )
+        if st.button("🚀 Iniciar Navegador con Depuración", type="primary", use_container_width=True):
             try:
                 subprocess.Popen(["cmd.exe", "/c", "iniciar_navegador_debug.bat"], shell=True)
-                time.sleep(2)
+                time.sleep(2.5)
                 st.rerun()
             except Exception as e:
                 st.error(f"Error al abrir: {e}")
 
     st.divider()
 
-    # Selector de Motor de IA
-    st.subheader("🤖 Motor de Interpretación")
-    engine_choice = st.selectbox(
-        "Modo de orquestación:",
-        options=["Motor Local Determinista (Ultra rápido, 0 red, corporativo)", "Hugging Face (Inference API)"],
-        index=0
-    )
-
-    if "Hugging Face" in engine_choice:
-        agent.mode = "huggingface"
-        hf_token_input = st.text_input("Hugging Face API Token:", type="password", value=os.getenv("HF_TOKEN", ""))
-        hf_model_input = st.selectbox(
-            "Modelo Hugging Face:",
-            options=[
-                "Qwen/Qwen2.5-Coder-7B-Instruct",
-                "mistralai/Mistral-7B-Instruct-v0.3",
-                "meta-llama/Llama-3.2-3B-Instruct"
-            ],
-            index=0
-        )
-        if hf_token_input:
-            agent.hf_token = hf_token_input
-            agent.model_name = hf_model_input
-            from huggingface_hub import InferenceClient
-            agent.client = InferenceClient(model=hf_model_input, token=hf_token_input)
-            st.markdown('<span class="status-badge status-ok">● Hugging Face Conectado</span>', unsafe_allow_html=True)
-        else:
-            st.caption("Ingresa tu token de Hugging Face para activar el modelo online, o usa el Motor Local.")
-    else:
-        agent.mode = "local_rules"
-        st.markdown('<span class="status-badge status-info">● Motor Local Privado Activo</span>', unsafe_allow_html=True)
-
-    st.divider()
-    st.subheader("📑 Seleccionar Pestaña")
-
+    # Obtener pestañas
     tabs = controller.list_tabs() if is_connected else []
 
     if tabs:
-        tab_options = {f"{t.title[:45]} ({t.url[:35]}...)": t.tab_id for t in tabs}
-        
-        default_index = 0
-        for i, t in enumerate(tabs):
-            if any(k in t.url.lower() or k in t.title.lower() for k in ["service-now", "servicenow", "incident", "task"]):
-                default_index = i
-                break
+        # Separar pestañas de ServiceNow de las normales
+        snow_tabs = [t for t in tabs if t.is_servicenow]
+        other_tabs = [t for t in tabs if not t.is_servicenow]
 
-        selected_label = st.selectbox(
-            "Pestañas abiertas:",
-            options=list(tab_options.keys()),
-            index=default_index
-        )
-        selected_id = tab_options[selected_label]
+        # 1. BOTÓN DIRECTO SI HAY SERVICENOW DETECTADO
+        if snow_tabs:
+            st.markdown("##### 🟢 Pestaña de ServiceNow Detectada:")
+            target_snow = snow_tabs[0]
+            st.markdown(f"""
+            <div class="snow-tab-card">
+                <strong>🎫 {target_snow.title[:40]}</strong><br>
+                <small style="color:#64748b;">{target_snow.url[:45]}...</small>
+            </div>
+            """, unsafe_allow_html=True)
 
-        if st.button("⚡ Activar y Enlazar Pestaña", type="primary", use_container_width=True):
-            success = controller.select_tab_by_id(selected_id)
-            if success:
-                st.session_state.selected_tab_id = selected_id
-                st.session_state.last_action_msg = f"Enlazado a: {selected_label}"
-                st.success("¡Pestaña enlazada correctamente!")
+            if st.button("👉 Conectar a esta pestaña de ServiceNow", type="primary", use_container_width=True):
+                controller.select_tab_by_id(target_snow.tab_id)
+                st.session_state.selected_tab_id = target_snow.tab_id
+                st.session_state.last_action_msg = f"Enlazado a ServiceNow: {target_snow.title[:30]}"
+                st.success("¡Pestaña de ServiceNow vinculada!")
                 time.sleep(0.5)
                 st.rerun()
-            else:
-                st.error("No se pudo conectar a la pestaña.")
+
+            st.caption("O elige otra pestaña de la lista abajo:")
+
+        # 2. SELECTOR GENERAL DE PESTAÑAS
+        tab_display_names = {}
+        for t in tabs:
+            prefix = "🟢 [ServiceNow]" if t.is_servicenow else "🌐 [Web]"
+            label = f"{prefix} {t.title[:35]} ({t.url[:25]}...)"
+            tab_display_names[label] = t.tab_id
+
+        selected_label = st.selectbox(
+            "Selecciona cualquier pestaña:",
+            options=list(tab_display_names.keys()),
+            index=0
+        )
+        selected_id = tab_display_names[selected_label]
+
+        col_act1, col_act2 = st.columns([1, 1])
+        with col_act1:
+            if st.button("⚡ Enlazar", use_container_width=True):
+                controller.select_tab_by_id(selected_id)
+                st.session_state.selected_tab_id = selected_id
+                st.session_state.last_action_msg = f"Enlazado a: {selected_label}"
+                st.success("¡Pestaña enlazada!")
+                time.sleep(0.5)
+                st.rerun()
+        with col_act2:
+            if st.button("🔄 Refrescar", use_container_width=True):
+                st.rerun()
+
     else:
         if is_connected:
-            st.warning("No se encontraron pestañas tipo página abiertas.")
+            st.info("No hay pestañas tipo página abiertas. Abre tu pestaña de ServiceNow y pulsa 'Refrescar'.")
+            if st.button("🔄 Refrescar Lista", use_container_width=True):
+                st.rerun()
         else:
-            st.caption("Abre Chrome con depuración para listar tus pestañas.")
-
-    if st.button("🔄 Refrescar Lista de Pestañas", use_container_width=True):
-        st.rerun()
+            st.caption("Abre el navegador con el botón superior para mostrar las pestañas.")
 
 
-# PANEL PRINCIPAL
-col_left, col_right = st.columns([1, 1], gap="medium")
+# ================= PANEL PRINCIPAL: CONTROLES =================
+col_ctrl, col_view = st.columns([1, 1], gap="medium")
 
-with col_left:
-    st.subheader("🎮 Controles de la Pestaña")
+with col_ctrl:
+    st.subheader("🎮 Controles para Mover la Pestaña")
 
-    # Botones directos de movimiento
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
+    # Botones de Scroll y Vista
+    b1, b2, b3, b4 = st.columns(4)
+    with b1:
         if st.button("⬆️ Subir", use_container_width=True):
             controller.scroll("up", 400)
-            st.session_state.last_action_msg = "Scroll hacia arriba (400px)"
+            st.session_state.last_action_msg = "Scroll hacia arriba (-400px)"
             st.rerun()
-    with c2:
+    with b2:
         if st.button("⬇️ Bajar", use_container_width=True):
             controller.scroll("down", 400)
-            st.session_state.last_action_msg = "Scroll hacia abajo (400px)"
+            st.session_state.last_action_msg = "Scroll hacia abajo (+400px)"
             st.rerun()
-    with c3:
+    with b3:
         if st.button("🔄 Recargar", use_container_width=True):
             controller.reload()
-            st.session_state.last_action_msg = "Página recargada"
+            st.session_state.last_action_msg = "Pestaña recargada"
             st.rerun()
-    with c4:
+    with b4:
         if st.button("👁️ Enfocar", use_container_width=True):
             if st.session_state.selected_tab_id:
                 controller.select_tab_by_id(st.session_state.selected_tab_id)
@@ -200,8 +204,8 @@ with col_left:
 
     st.divider()
 
-    # Controles específicos de ServiceNow
-    st.markdown("#### ⚡ Acciones Rápidas para ServiceNow")
+    # Acciones Especiales de ServiceNow
+    st.markdown("#### ⚡ Acciones en Tickets de ServiceNow")
     sn1, sn2 = st.columns(2)
     with sn1:
         if st.button("📝 Ir a Pestaña Notes", use_container_width=True):
@@ -220,45 +224,43 @@ with col_left:
 
     st.divider()
 
-    # Control por Lenguaje Natural
-    st.markdown("#### 💬 Comandos en Lenguaje Natural")
+    # Comandos en lenguaje natural
+    st.markdown("#### 💬 Comandos por Texto")
     prompt = st.text_input(
-        "Indica una acción en lenguaje natural:",
+        "Escribe qué quieres que haga la pestaña:",
         placeholder="Ej: 'baja 500px', 'sube', 'haz clic en Notes', 'guardar'..."
     )
 
-    if st.button("✨ Ejecutar Acción", use_container_width=True):
+    if st.button("✨ Enviar Comando", use_container_width=True):
         if prompt:
             action_data = agent.run_sync(prompt)
             act = action_data.get("action", "")
-            engine_used = action_data.get("engine", "local")
             
             if act == "scroll":
                 direction = action_data.get("direction", "down")
                 amt = action_data.get("amount", 400)
                 controller.scroll(direction, amt)
-                st.session_state.last_action_msg = f"[{engine_used}] Scroll {direction} ({amt}px)"
+                st.session_state.last_action_msg = f"Scroll {direction} ({amt}px)"
             elif act == "click":
                 sel = action_data.get("selector", "")
                 done = controller.click_element(sel)
-                st.session_state.last_action_msg = f"[{engine_used}] Clic en: {sel} ({'Éxito' if done else 'No hallado'})"
+                st.session_state.last_action_msg = f"Clic en {sel} ({'Éxito' if done else 'No hallado'})"
             elif act == "reload":
                 controller.reload()
-                st.session_state.last_action_msg = f"[{engine_used}] Recarga completada"
+                st.session_state.last_action_msg = "Recarga completada"
             elif act == "answer":
                 st.info(action_data.get("message", ""))
-            
+
             st.rerun()
 
     st.caption(f"Última acción: **{st.session_state.last_action_msg}**")
 
 
-with col_right:
-    st.subheader("📺 Vista Previa en Vivo de la Pestaña")
-    
+with col_view:
+    st.subheader("📺 Vista Previa de la Pestaña")
     screenshot_bytes = controller.take_screenshot()
     if screenshot_bytes:
         image = Image.open(BytesIO(screenshot_bytes))
-        st.image(image, caption="Pestaña activa en tiempo real", use_container_width=True)
+        st.image(image, caption="Contenido en vivo de la pestaña enlazada", use_container_width=True)
     else:
-        st.warning("Selecciona y activa una pestaña desde el panel lateral izquierdo para ver su contenido en vivo aquí.")
+        st.info("Elige tu pestaña en el panel izquierdo y haz clic en **'⚡ Enlazar'** para ver su vista en vivo aquí.")
