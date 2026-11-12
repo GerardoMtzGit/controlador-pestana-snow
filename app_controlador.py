@@ -1,8 +1,9 @@
 """
 app_controlador.py
 Interfaz interactiva y clara para seleccionar y controlar pestañas de ServiceNow.
-Incluye Feature Paso 2:
-- Eliminación del botón ambiguo de apertura anterior.
+Incluye Feature Paso 2 (Auto-Scan):
+- Escaneo automático inmediato al enlazar la pestaña o refrescar (sin necesidad de botón manual).
+- Banner informativo con el total de tickets en el Queue.
 - Buscador inteligente de ticket por número/nombre.
 - Localización precisa del elemento en pantalla y posicionamiento del cursor con CDP Input.dispatchMouseEvent.
 - Apertura automática de ticket individual o por búsqueda.
@@ -109,7 +110,7 @@ st.markdown("""
 <div class="se-banner">
     <h2 style="margin:0; font-size:1.4rem; font-weight:700;">⚡ Controlador Directo de Pestaña ServiceNow</h2>
     <p style="margin:4px 0 0 0; font-size:0.88rem; color:#cbd5e1;">
-        Paso 2: Búsqueda del ticket, posicionamiento de Mouse en la columna <strong>Number</strong> y apertura.
+        Paso 2: Búsqueda del ticket, posicionamiento de Mouse en la columna <strong>Number</strong> y apertura automática.
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -161,11 +162,12 @@ with st.sidebar:
                 st.session_state.selected_tab_id = target_snow.tab_id
                 st.session_state.selected_tab_title = target_snow.title
                 st.session_state.last_action_msg = f"Enlazado a ServiceNow: {target_snow.title[:30]}"
+                # Escaneo automático al enlazar
                 diag = controller.scan_tickets_with_diagnostics()
                 st.session_state.detected_tickets = diag.get("tickets", [])
                 st.session_state.queue_summary_text = diag.get("totalQueueText", "")
                 st.session_state.last_scan_logs = diag.get("logs", [])
-                st.success("¡Pestaña de ServiceNow vinculada!")
+                st.success("¡Pestaña de ServiceNow vinculada y escaneada automáticamente!")
                 time.sleep(0.3)
                 st.rerun()
 
@@ -192,15 +194,21 @@ with st.sidebar:
                 st.session_state.selected_tab_id = selected_id
                 st.session_state.selected_tab_title = selected_title
                 st.session_state.last_action_msg = f"Enlazado a: {selected_title[:30]}"
+                # Escaneo automático al enlazar
                 diag = controller.scan_tickets_with_diagnostics()
                 st.session_state.detected_tickets = diag.get("tickets", [])
                 st.session_state.queue_summary_text = diag.get("totalQueueText", "")
                 st.session_state.last_scan_logs = diag.get("logs", [])
-                st.success("¡Pestaña enlazada!")
+                st.success("¡Pestaña enlazada y escaneada!")
                 time.sleep(0.3)
                 st.rerun()
         with col_act2:
             if st.button("🔄 Refrescar", use_container_width=True):
+                if st.session_state.selected_tab_id:
+                    diag = controller.scan_tickets_with_diagnostics()
+                    st.session_state.detected_tickets = diag.get("tickets", [])
+                    st.session_state.queue_summary_text = diag.get("totalQueueText", "")
+                    st.session_state.last_scan_logs = diag.get("logs", [])
                 st.rerun()
 
     else:
@@ -219,28 +227,25 @@ with col_ctrl:
     # ================= FEATURE: PASO 2 - ESCANEAR Y ABRIR EL TICKET =================
     st.markdown("### 🎯 Paso 2: Escanear y Abrir el Ticket")
 
-    # Banner con información del Queue
-    if st.session_state.queue_summary_text:
-        st.markdown(f"""
-        <div class="queue-counter-banner">
-            📊 Total en Cola (Queue): {st.session_state.queue_summary_text} | Detectados: {len(st.session_state.detected_tickets)}
-        </div>
-        """, unsafe_allow_html=True)
-
-    # 1. BOTÓN PRINCIPAL: ESCANEAR TICKETS
-    if st.button("🔍 Escanear Tickets en la Tabla", type="primary", use_container_width=True):
+    # Si hay una pestaña enlazada pero aún no se escanearon tickets, escanear automáticamente en segundo plano
+    if st.session_state.selected_tab_id and not st.session_state.detected_tickets:
         diag = controller.scan_tickets_with_diagnostics()
         st.session_state.detected_tickets = diag.get("tickets", [])
         st.session_state.queue_summary_text = diag.get("totalQueueText", "")
         st.session_state.last_scan_logs = diag.get("logs", [])
-        st.session_state.last_action_msg = f"Escaneo: {len(st.session_state.detected_tickets)} ticket(s) encontrados ({st.session_state.queue_summary_text})"
-        st.rerun()
 
-    # 2. FUNCIÓN DE BÚSQUEDA Y APERTURA DIRECTA CON POSICIONAMIENTO DE MOUSE
+    # Banner con información del Queue
+    if st.session_state.queue_summary_text:
+        st.markdown(f"""
+        <div class="queue-counter-banner">
+            📊 Total en Cola (Queue): {st.session_state.queue_summary_text} | Detectados en vista: {len(st.session_state.detected_tickets)}
+        </div>
+        """, unsafe_allow_html=True)
+
+    # FUNCIÓN DE BÚSQUEDA Y APERTURA DIRECTA CON POSICIONAMIENTO DE MOUSE
     st.markdown("#### 🔎 Búsqueda y Posicionamiento de Mouse")
     col_search_inp, col_search_btn = st.columns([2, 1])
 
-    # Sugerir el primer ticket detectado si existe
     suggested_val = st.session_state.detected_tickets[0]["number"] if st.session_state.detected_tickets else ""
 
     with col_search_inp:
@@ -265,7 +270,7 @@ with col_ctrl:
                     time.sleep(0.5)
                     st.rerun()
 
-    # 3. LISTA DE TICKETS CON BOTÓN DE POSICIONAMIENTO INDIVIDUAL
+    # LISTA DE TICKETS DETECTADOS AUTOMÁTICAMENTE CON BOTÓN DE POSICIONAMIENTO INDIVIDUAL
     if st.session_state.detected_tickets:
         st.markdown(f"**Tickets disponibles en la tabla (`{len(st.session_state.detected_tickets)}`):**")
         for idx, t in enumerate(st.session_state.detected_tickets):
@@ -299,7 +304,7 @@ with col_ctrl:
                         time.sleep(0.5)
                         st.rerun()
     else:
-        st.info("💡 Haz clic en **'🔍 Escanear Tickets en la Tabla'** para listar los registros detectados en tu cola.")
+        st.info("💡 Enlaza tu pestaña de ServiceNow en el panel izquierdo; el escaneo se realiza automáticamente.")
 
     # Acordeón opcional de diagnóstico/logs de escaneo en la interfaz
     if st.session_state.last_scan_logs:
