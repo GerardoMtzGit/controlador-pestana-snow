@@ -329,19 +329,20 @@ with col_ctrl:
                 status_text.success(f"¡Ticket {clean_target} cargado!")
                 st.session_state.last_frame = controller.take_screenshot()
 
-                # PASO 3: Extracción automática inmediata de los 16 campos
+                # Limpiar datos previos de Paso 3 y Paso 4 para mostrar exclusivamente el ticket buscado
+                st.session_state.saved_tickets_list = []
+                st.session_state.extracted_ticket_data = {}
+                st.session_state.similarity_results = None
+
+                # PASO 3: Extracción automática del ticket actual
                 extracted = controller.extract_ticket_form_data()
                 if extracted:
                     if not extracted.get("Number"):
                         extracted["Number"] = clean_target
                     st.session_state.extracted_ticket_data = extracted
-                    existing_idx = next((i for i, r in enumerate(st.session_state.saved_tickets_list) if r.get("Number") == extracted.get("Number")), None)
-                    if existing_idx is not None:
-                        st.session_state.saved_tickets_list[existing_idx] = extracted
-                    else:
-                        st.session_state.saved_tickets_list.append(extracted)
+                    st.session_state.saved_tickets_list = [extracted]
 
-                st.session_state.last_action_msg = f"Ticket {clean_target} cargado y campos guardados en tabla"
+                st.session_state.last_action_msg = f"Ticket {clean_target} cargado (datos previos limpiados)"
                 time.sleep(0.3)
                 st.rerun()
 
@@ -394,19 +395,20 @@ with col_ctrl:
                     status_text.success(f"¡Ticket {t_num} cargado!")
                     st.session_state.last_frame = controller.take_screenshot()
 
-                    # PASO 3: Extracción automática inmediata de los 16 campos
+                    # Limpiar datos previos de Paso 3 y Paso 4 para mostrar exclusivamente el ticket buscado
+                    st.session_state.saved_tickets_list = []
+                    st.session_state.extracted_ticket_data = {}
+                    st.session_state.similarity_results = None
+
+                    # PASO 3: Extracción automática del ticket actual
                     extracted = controller.extract_ticket_form_data()
                     if extracted:
                         if not extracted.get("Number"):
                             extracted["Number"] = t_num
                         st.session_state.extracted_ticket_data = extracted
-                        existing_idx = next((i for i, r in enumerate(st.session_state.saved_tickets_list) if r.get("Number") == extracted.get("Number")), None)
-                        if existing_idx is not None:
-                            st.session_state.saved_tickets_list[existing_idx] = extracted
-                        else:
-                            st.session_state.saved_tickets_list.append(extracted)
+                        st.session_state.saved_tickets_list = [extracted]
 
-                    st.session_state.last_action_msg = f"Ticket {t_num} cargado y campos guardados en tabla"
+                    st.session_state.last_action_msg = f"Ticket {t_num} cargado (datos previos limpiados)"
                     time.sleep(0.3)
                     st.rerun()
 
@@ -436,16 +438,10 @@ with col_ctrl:
                 data = controller.extract_ticket_form_data()
                 if data:
                     t_num = data.get("Number", "").strip()
-                    existing_entry = next((r for r in st.session_state.saved_tickets_list if r.get("Number") == t_num), {})
+                    existing_entry = st.session_state.saved_tickets_list[0] if st.session_state.saved_tickets_list else {}
                     merged = {**existing_entry, **data}
                     st.session_state.extracted_ticket_data = merged
-
-                    if t_num:
-                        idx_found = next((i for i, r in enumerate(st.session_state.saved_tickets_list) if r.get("Number") == t_num), None)
-                        if idx_found is not None:
-                            st.session_state.saved_tickets_list[idx_found] = merged
-                        else:
-                            st.session_state.saved_tickets_list.append(merged)
+                    st.session_state.saved_tickets_list = [merged]
                     st.session_state.last_action_msg = f"Campos generales extraídos para {t_num or 'ticket actual'}"
                     st.session_state.last_frame = controller.take_screenshot()
                     st.rerun()
@@ -458,17 +454,15 @@ with col_ctrl:
                 # Obtener ticket activo
                 curr_ticket = st.session_state.extracted_ticket_data.get("Number", "")
                 if not curr_ticket and st.session_state.saved_tickets_list:
-                    curr_ticket = st.session_state.saved_tickets_list[-1].get("Number", "")
+                    curr_ticket = st.session_state.saved_tickets_list[0].get("Number", "")
 
-                # Mezclar datos en la sesión y en la tabla guardada
+                # Mezclar datos exclusivamente sobre el ticket actual
                 st.session_state.extracted_ticket_data.update(user_fields)
-                if curr_ticket:
-                    idx_found = next((i for i, r in enumerate(st.session_state.saved_tickets_list) if r.get("Number") == curr_ticket), None)
-                    if idx_found is not None:
-                        st.session_state.saved_tickets_list[idx_found].update(user_fields)
-                    else:
-                        entry = {"Number": curr_ticket, **user_fields}
-                        st.session_state.saved_tickets_list.append(entry)
+                if st.session_state.saved_tickets_list:
+                    st.session_state.saved_tickets_list[0].update(user_fields)
+                else:
+                    entry = {"Number": curr_ticket, **user_fields}
+                    st.session_state.saved_tickets_list = [entry]
 
                 st.session_state.last_action_msg = "Pestaña 'User Submitted Fields' abierta y campos extraídos"
                 st.session_state.last_frame = controller.take_screenshot()
