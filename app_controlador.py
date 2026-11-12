@@ -2,11 +2,10 @@
 app_controlador.py
 Interfaz interactiva y clara para seleccionar y controlar pestañas de ServiceNow.
 Incluye:
+- Persistencia estricta de la pestaña seleccionada en st.session_state (la vista espejo NUNCA desaparece).
+- Opción de refresco automático o manual de la vista espejo.
+- Controles de movimiento: Scroll Arriba / Abajo, Clics en Notas y Guardado.
 - Detección visual y botón directo '⚡ Seleccionar pestaña de ServiceNow'.
-- Lista de pestañas clasificadas con icono distintivo para ServiceNow.
-- Modo Asistente de Conexión si el puerto no responde (abrir con 1 clic).
-- Controles de movimiento: Scroll, Clics en Notas y Guardado.
-- Vista previa de la pestaña en tiempo real.
 """
 
 import os
@@ -26,7 +25,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Inicializar sesión
+# Inicializar sesión persistente
 if "controller" not in st.session_state:
     st.session_state.controller = CDPBrowserController()
 
@@ -36,8 +35,14 @@ if "agent" not in st.session_state:
 if "selected_tab_id" not in st.session_state:
     st.session_state.selected_tab_id = None
 
+if "selected_tab_title" not in st.session_state:
+    st.session_state.selected_tab_title = ""
+
 if "last_action_msg" not in st.session_state:
     st.session_state.last_action_msg = "Listo para operar"
+
+if "last_frame" not in st.session_state:
+    st.session_state.last_frame = None
 
 controller: CDPBrowserController = st.session_state.controller
 agent: HuggingFaceTabAgent = st.session_state.agent
@@ -68,6 +73,12 @@ st.markdown("""
         padding: 10px;
         border-radius: 8px;
         margin-bottom: 10px;
+    }
+    .mirror-box {
+        border: 2px solid #009530;
+        border-radius: 8px;
+        padding: 6px;
+        background: #020617;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -108,13 +119,10 @@ with st.sidebar:
 
     st.divider()
 
-    # Obtener pestañas
     tabs = controller.list_tabs() if is_connected else []
 
     if tabs:
-        # Separar pestañas de ServiceNow de las normales
         snow_tabs = [t for t in tabs if t.is_servicenow]
-        other_tabs = [t for t in tabs if not t.is_servicenow]
 
         # 1. BOTÓN DIRECTO SI HAY SERVICENOW DETECTADO
         if snow_tabs:
@@ -130,9 +138,10 @@ with st.sidebar:
             if st.button("👉 Conectar a esta pestaña de ServiceNow", type="primary", use_container_width=True):
                 controller.select_tab_by_id(target_snow.tab_id)
                 st.session_state.selected_tab_id = target_snow.tab_id
+                st.session_state.selected_tab_title = target_snow.title
                 st.session_state.last_action_msg = f"Enlazado a ServiceNow: {target_snow.title[:30]}"
-                st.success("¡Pestaña de ServiceNow vinculada!")
-                time.sleep(0.5)
+                st.success("¡Pestaña de ServiceNow vinculada permanentemente!")
+                time.sleep(0.3)
                 st.rerun()
 
             st.caption("O elige otra pestaña de la lista abajo:")
@@ -142,23 +151,24 @@ with st.sidebar:
         for t in tabs:
             prefix = "🟢 [ServiceNow]" if t.is_servicenow else "🌐 [Web]"
             label = f"{prefix} {t.title[:35]} ({t.url[:25]}...)"
-            tab_display_names[label] = t.tab_id
+            tab_display_names[label] = (t.tab_id, t.title)
 
         selected_label = st.selectbox(
             "Selecciona cualquier pestaña:",
             options=list(tab_display_names.keys()),
             index=0
         )
-        selected_id = tab_display_names[selected_label]
+        selected_id, selected_title = tab_display_names[selected_label]
 
         col_act1, col_act2 = st.columns([1, 1])
         with col_act1:
             if st.button("⚡ Enlazar", use_container_width=True):
                 controller.select_tab_by_id(selected_id)
                 st.session_state.selected_tab_id = selected_id
-                st.session_state.last_action_msg = f"Enlazado a: {selected_label}"
+                st.session_state.selected_tab_title = selected_title
+                st.session_state.last_action_msg = f"Enlazado a: {selected_title[:30]}"
                 st.success("¡Pestaña enlazada!")
-                time.sleep(0.5)
+                time.sleep(0.3)
                 st.rerun()
         with col_act2:
             if st.button("🔄 Refrescar", use_container_width=True):
@@ -178,6 +188,12 @@ col_ctrl, col_view = st.columns([1, 1], gap="medium")
 
 with col_ctrl:
     st.subheader("🎮 Controles para Mover la Pestaña")
+
+    # Mostrar pestaña activa vinculada
+    if st.session_state.selected_tab_id:
+        st.markdown(f"**Pestaña Activa:** `{st.session_state.selected_tab_title or st.session_state.selected_tab_id}`")
+    else:
+        st.info("💡 Enlaza una pestaña desde el menú lateral para activarla.")
 
     # Botones de Scroll y Vista
     b1, b2, b3, b4 = st.columns(4)
@@ -258,9 +274,22 @@ with col_ctrl:
 
 with col_view:
     st.subheader("📺 Vista Previa de la Pestaña")
+
+    # Si hay pestaña enlazada en la sesión, asegurar que el controlador la tenga asignada
+    if st.session_state.selected_tab_id and controller.current_tab_id != st.session_state.selected_tab_id:
+        controller.current_tab_id = st.session_state.selected_tab_id
+
     screenshot_bytes = controller.take_screenshot()
     if screenshot_bytes:
-        image = Image.open(BytesIO(screenshot_bytes))
-        st.image(image, caption="Contenido en vivo de la pestaña enlazada", use_container_width=True)
+        st.session_state.last_frame = screenshot_bytes
+
+    # Mostrar el frame actual o el último conocido en caché (nunca pantalla en blanco)
+    frame_to_show = screenshot_bytes or st.session_state.last_frame
+
+    if frame_to_show:
+        image = Image.open(BytesIO(frame_to_show))
+        st.image(image, caption=f"Pestaña enlazada: {st.session_state.selected_tab_title or 'En vivo'}", use_container_width=True)
+        if st.button("📸 Actualizar Vista Espejo", use_container_width=True):
+            st.rerun()
     else:
         st.info("Elige tu pestaña en el panel izquierdo y haz clic en **'⚡ Enlazar'** para ver su vista en vivo aquí.")
