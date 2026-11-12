@@ -1,23 +1,94 @@
 """
 similarity_engine.py
-Motor de análisis de similitud histórica y recomendación de colas (Queues) mediante:
-1. Comparación semántica y vectorial de 'Description' (Paso 3) vs CSV histórico.
-2. Agrupación y estadísticas de colas donde se cerraron los tickets más similares.
-3. Integración con LLM local Gemma (vía Ollama o inferencia local) para síntesis inteligente.
-4. Fallback 100% determinista y offline con scikit-learn (TF-IDF + Coseno).
+Motor de análisis de similitud histórica y recomendación de colas (Queues).
+Diseñado para entornos corporativos con proxy estricto:
+1. 0 dependencias obligatorias (incluye motor TF-IDF nativo en Python puro de 0 ms).
+2. Si scikit-learn está disponible lo usa; si no, usa el motor nativo sin interrumpir.
+3. Conexión automática con LLM local Gemma (vía Ollama localhost:11434).
+4. Agrupación estadística y detección automática de columnas de ServiceNow.
 """
 
 import os
 import re
 import json
+import math
+from collections import Counter
 import requests
 from typing import Dict, Any, List, Optional, Tuple
 import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+
+# Detección opcional de scikit-learn (tolerante a fallos de instalación)
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
 
 
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
+
+
+class PurePythonTfidfVectorizer:
+    """Vectorizador TF-IDF nativo en Python estándar sin dependencias externas (0 pip, 0 proxy blocks)."""
+
+    def __init__(self, ngram_range=(1, 2)):
+        self.ngram_range = ngram_range
+        self.stop_words = {
+            "a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "of", "with", "by",
+            "is", "are", "was", "were", "it", "this", "that", "these", "those", "de", "la", "el",
+            "en", "y", "o", "un", "una", "los", "las", "por", "para", "con", "es", "son", "su"
+        }
+        self.vocab: Dict[str, int] = {}
+        self.idf: Dict[str, float] = {}
+        self.doc_count: int = 0
+
+    def _tokenize(self, text: str) -> List[str]:
+        words = [w for w in re.findall(r"\b[a-zA-Z0-9_\-\.]{2,}\b", text.lower()) if w not in self.stop_words]
+        tokens = list(words)
+        if self.ngram_range[1] >= 2 and len(words) > 1:
+            for i in range(len(words) - 1):
+                tokens.append(f"{words[i]}_{words[i+1]}")
+        return tokens
+
+    def fit_transform(self, docs: List[str]) -> List[Dict[int, float]]:
+        self.doc_count = len(docs)
+        doc_tokens = [self._tokenize(d) for d in docs]
+
+        df_counts = Counter()
+        for dt in doc_tokens:
+            for term in set(dt):
+                df_counts[term] += 1
+
+        self.vocab = {term: idx for idx, term in enumerate(df_counts.keys())}
+        self.idf = {
+            term: math.log((1.0 + self.doc_count) / (1.0 + count)) + 1.0
+            for term, count in df_counts.items()
+        }
+
+        vectors = []
+        for dt in doc_tokens:
+            vec = {}
+            term_counts = Counter(dt)
+            total = len(dt) or 1
+            for term, count in term_counts.items():
+                if term in self.idf:
+                    tf = count / total
+                    vec[self.vocab[term]] = tf * self.idf[term]
+
+            norm = math.sqrt(sum(v * v for v in vec.values())) or 1.0
+            norm_vec = {k: v / norm for k, v in vec.items()}
+            vectors.append(norm_vec)
+
+        return vectors
+
+    @staticmethod
+    def cosine_similarity(vec_a: Dict[int, float], vec_b: Dict[int, float]) -> float:
+        if not vec_a or not vec_b:
+            return 0.0
+        if len(vec_a) > len(vec_b):
+            vec_a, vec_b = vec_b, vec_a
+        return sum(val * vec_b.get(idx, 0.0) for idx, val in vec_a.items())
 
 
 class LocalGemmaClient:
@@ -93,7 +164,6 @@ class HistoricalCSVAnalyzer:
     def load_csv(self, file_or_buffer) -> Tuple[bool, str]:
         """Carga y valida el archivo CSV histórico, detectando automáticamente las columnas clave."""
         try:
-            # Soportar codificaciones habituales de ServiceNow (UTF-8, Latin-1, cp1252)
             for enc in ["utf-8", "latin-1", "cp1252"]:
                 try:
                     if hasattr(file_or_buffer, "seek"):
@@ -137,7 +207,6 @@ class HistoricalCSVAnalyzer:
                 if "short" not in cl:
                     desc_candidates.append(c)
                 else:
-                    # Dejar Short description solo como último recurso
                     desc_candidates.append(c)
 
         self.desc_col = desc_candidates[0] if desc_candidates else cols[0]
@@ -168,10 +237,10 @@ class HistoricalCSVAnalyzer:
                 state_candidates.append(c)
         self.state_col = state_candidates[0] if state_candidates else ""
 
-    def analyze_similarity(self, query_description: str, top_k: int = 15, threshold: float = 0.15) -> Dict[str, Any]:
+    def analyze_similarity(self, query_description: str, top_k: int = 15, threshold: float = 0.10) -> Dict[str, Any]:
         """
-        Compara la descripción del ticket actual contra todas las descripciones del CSV histórico
-        utilizando TF-IDF y similitud del coseno.
+        Compara la descripción del ticket actual contra todas las descripciones del CSV histórico.
+        Utiliza scikit-learn si está disponible; de lo contrario utiliza PurePythonTfidfVectorizer.
         """
         if self.df_historical is None or self.df_historical.empty or not self.desc_col:
             return {
@@ -194,21 +263,28 @@ class HistoricalCSVAnalyzer:
                 "detailed_matches": []
             }
 
-        # Preparar corpus
         corpus_series = self.df_historical[self.desc_col].fillna("").astype(str)
         corpus = corpus_series.tolist()
 
-        # Vectorizar con TF-IDF (soporta n-gramas 1-2 para captar frases y términos técnicos de ServiceNow)
-        vectorizer = TfidfVectorizer(
-            ngram_range=(1, 2),
-            stop_words=None,
-            max_features=25000,
-            token_pattern=r"(?u)\b\w+\b"
-        )
-
-        all_texts = [query_clean] + corpus
         try:
-            tfidf_matrix = vectorizer.fit_transform(all_texts)
+            if SKLEARN_AVAILABLE:
+                vectorizer = TfidfVectorizer(
+                    ngram_range=(1, 2),
+                    stop_words=None,
+                    max_features=25000,
+                    token_pattern=r"(?u)\b\w+\b"
+                )
+                all_texts = [query_clean] + corpus
+                tfidf_matrix = vectorizer.fit_transform(all_texts)
+                query_vec = tfidf_matrix[0:1]
+                historical_vecs = tfidf_matrix[1:]
+                similarities = list(cosine_similarity(query_vec, historical_vecs).flatten())
+            else:
+                pure_vectorizer = PurePythonTfidfVectorizer(ngram_range=(1, 2))
+                all_texts = [query_clean] + corpus
+                vectors = pure_vectorizer.fit_transform(all_texts)
+                query_vec = vectors[0]
+                similarities = [pure_vectorizer.cosine_similarity(query_vec, v) for v in vectors[1:]]
         except Exception as e:
             return {
                 "success": False,
@@ -219,17 +295,12 @@ class HistoricalCSVAnalyzer:
                 "detailed_matches": []
             }
 
-        query_vec = tfidf_matrix[0:1]
-        historical_vecs = tfidf_matrix[1:]
-
-        similarities = cosine_similarity(query_vec, historical_vecs).flatten()
-
-        # Obtener los índices más similares ordenados descendente
-        sorted_indices = similarities.argsort()[::-1]
+        # Ordenar índices por mayor similitud
+        indexed_scores = list(enumerate(similarities))
+        indexed_scores.sort(key=lambda x: x[1], reverse=True)
 
         matches = []
-        for idx in sorted_indices:
-            sim_score = float(similarities[idx])
+        for idx, sim_score in indexed_scores:
             if sim_score < threshold and len(matches) >= 3:
                 break
             if len(matches) >= top_k:
@@ -241,23 +312,21 @@ class HistoricalCSVAnalyzer:
             queue_val = str(row[self.queue_col]) if self.queue_col and pd.notna(row[self.queue_col]) else "Sin Cola Especificada"
             state_val = str(row[self.state_col]) if self.state_col and pd.notna(row[self.state_col]) else "Cerrado / Resuelto"
 
-            # Truncar descripción larga para vista
             shortened_desc = raw_desc if len(raw_desc) <= 150 else raw_desc[:147] + "..."
 
             matches.append({
                 "Ticket Histórico": t_num,
                 "Descripción Histórica": shortened_desc,
                 "Queue de Cierre": queue_val,
-                "Similitud (%)": round(sim_score * 100, 1),
+                "Similitud (%)": round(float(sim_score) * 100, 1),
                 "Estado / Cierre": state_val,
                 "_raw_desc": raw_desc,
-                "_score": sim_score
+                "_score": float(sim_score)
             })
 
-        # Si no hubo coincidencias con threshold alto, tomar al menos los top 3 relativos
-        if not matches and len(sorted_indices) > 0:
-            for idx in sorted_indices[:3]:
-                sim_score = float(similarities[idx])
+        # Si el umbral fue muy alto pero hay registros, tomar los 3 más parecidos
+        if not matches and len(indexed_scores) > 0:
+            for idx, sim_score in indexed_scores[:3]:
                 row = self.df_historical.iloc[idx]
                 t_num = str(row[self.num_col]) if self.num_col and pd.notna(row[self.num_col]) else f"HIST-{idx+1}"
                 raw_desc = str(row[self.desc_col]) if pd.notna(row[self.desc_col]) else ""
@@ -267,31 +336,28 @@ class HistoricalCSVAnalyzer:
                     "Ticket Histórico": t_num,
                     "Descripción Histórica": raw_desc[:147] + "..." if len(raw_desc) > 150 else raw_desc,
                     "Queue de Cierre": queue_val,
-                    "Similitud (%)": round(sim_score * 100, 1),
+                    "Similitud (%)": round(float(sim_score) * 100, 1),
                     "Estado / Cierre": state_val,
                     "_raw_desc": raw_desc,
-                    "_score": sim_score
+                    "_score": float(sim_score)
                 })
 
-        # Desglose estadístico por Queue
         queue_counts = {}
         for m in matches:
             q = m["Queue de Cierre"]
             queue_counts[q] = queue_counts.get(q, 0) + 1
 
-        # Ordenar colas por mayor frecuencia de cierre
         sorted_queues = sorted(queue_counts.items(), key=lambda x: x[1], reverse=True)
         top_queue = sorted_queues[0][0] if sorted_queues else ""
 
-        # Construir resumen textual de matches para Gemma
+        # Resumen para Gemma
         summary_lines = []
-        for idx, m in enumerate(matches[:5], 1):
+        for m in matches[:5]:
             summary_lines.append(
                 f"- Ticket: {m['Ticket Histórico']} | Queue: {m['Queue de Cierre']} | Similitud: {m['Similitud (%)']}% | Descripción: {m['Descripción Histórica'][:90]}"
             )
         matches_text_for_llm = "\n".join(summary_lines)
 
-        # Consultar síntesis a Gemma Local si está disponible
         gemma_synthesis = None
         if LocalGemmaClient.is_available():
             available_models = LocalGemmaClient.get_available_models()
@@ -311,4 +377,3 @@ class HistoricalCSVAnalyzer:
             "gemma_synthesis": gemma_synthesis,
             "gemma_available": LocalGemmaClient.is_available()
         }
-

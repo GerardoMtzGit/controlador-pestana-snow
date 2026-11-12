@@ -20,8 +20,7 @@ REQUIRED_LIBRARIES = {
     "playwright": "playwright>=1.44.0",
     "requests": "requests>=2.31.0",
     "PIL": "pillow>=10.0.0",
-    "pandas": "pandas>=2.0.0",
-    "sklearn": "scikit-learn>=1.3.0"
+    "pandas": "pandas>=2.0.0"
 }
 
 OPTIONAL_LIBRARIES = {
