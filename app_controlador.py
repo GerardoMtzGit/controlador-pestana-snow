@@ -18,6 +18,7 @@ import streamlit as st
 from tab_engine import CDPBrowserController, TabInfo
 from agent_bridge import HuggingFaceTabAgent
 from classifier_engine import TicketClassifierEngine, USER_ROUTING_MARKDOWN
+from similarity_engine import HistoricalCSVAnalyzer, LocalGemmaClient
 
 
 st.set_page_config(
@@ -72,6 +73,15 @@ if "classifier_engine" not in st.session_state:
 
 if "routing_decisions" not in st.session_state:
     st.session_state.routing_decisions = []
+
+if "similarity_analyzer" not in st.session_state:
+    st.session_state.similarity_analyzer = HistoricalCSVAnalyzer()
+
+if "similarity_results" not in st.session_state:
+    st.session_state.similarity_results = None
+
+if "csv_status_msg" not in st.session_state:
+    st.session_state.csv_status_msg = ""
 
 controller: CDPBrowserController = st.session_state.controller
 agent: HuggingFaceTabAgent = st.session_state.agent
@@ -532,64 +542,142 @@ with col_ctrl:
 
     st.divider()
 
-    # ================= FEATURE: PASO 4 - CLASIFICACIÓN Y ENRUTAMIENTO INTELIGENTE =================
-    st.markdown("### 🧠 Paso 4: Clasificación y Enrutamiento de Cola (Queue)")
-    st.caption("Compara la descripción del ticket contra las directrices en Markdown para sugerir la Cola (Queue) de destino y una Posible Solución.")
+    # ================= FEATURE: PASO 4 - ANÁLISIS HISTÓRICO CSV Y LLM GEMMA =================
+    st.markdown("### 🧠 Paso 4: Análisis de Similitud Histórica con CSV y LLM Gemma")
+    st.caption("Arrastra un archivo CSV con tickets históricos para comparar su campo **Description** contra el ticket del Paso 3 y sugerir el Queue de cierre.")
 
-    # Visualizador y Editor de Markdown
-    with st.expander("📄 Ver / Modificar Guía de Reglas en Markdown", expanded=False):
-        st.info("Puedes pegar aquí tus directrices en formato Markdown o modificarlas libremente. El motor reevaluará las colas y soluciones automáticamente.")
-        new_md = st.text_area(
-            "Directrices y Reglas Markdown:",
-            value=st.session_state.routing_markdown,
-            height=260,
-            help="Pega aquí el contenido Markdown con los Queues, palabras clave y posibles soluciones."
+    # Cuadro para arrastrar CSV y estado de LLM Gemma
+    col_upload, col_gemma_badge = st.columns([2, 1])
+    with col_upload:
+        uploaded_csv = st.file_uploader(
+            "📂 Arrastra tu archivo CSV de tickets históricos aquí:",
+            type=["csv"],
+            key="uploader_csv_tickets",
+            help="Soporta exportaciones estándar de ServiceNow con columnas Number, Description, Assignment group, State."
         )
-        if new_md != st.session_state.routing_markdown:
-            st.session_state.routing_markdown = new_md
-            st.session_state.classifier_engine.update_rules_from_markdown(new_md)
-            st.success("¡Reglas Markdown actualizadas!")
 
-    col_run_p4, col_clear_p4 = st.columns([2, 1])
-    with col_run_p4:
-        if st.button("🚀 Evaluar y Enrutar Tickets (Paso 4)", type="primary", use_container_width=True):
-            # Priorizar tickets completos extraídos en Paso 3, o los detectados en la tabla de Paso 2
-            tickets_to_eval = st.session_state.saved_tickets_list or st.session_state.detected_tickets
-            if tickets_to_eval:
-                with st.spinner("Comparando descripciones contra las directrices Markdown..."):
-                    decisions = st.session_state.classifier_engine.classify_all_tickets(tickets_to_eval)
-                    st.session_state.routing_decisions = decisions
-                    st.session_state.last_action_msg = f"{len(decisions)} ticket(s) enrutados en Paso 4"
-                    st.rerun()
+        if uploaded_csv is not None:
+            ok, msg = st.session_state.similarity_analyzer.load_csv(uploaded_csv)
+            st.session_state.csv_status_msg = msg
+            if ok:
+                st.success(f"✅ {msg}")
             else:
-                st.warning("No hay tickets disponibles para clasificar. Abre un ticket o enlaza la pestaña en el panel izquierdo.")
+                st.error(f"❌ {msg}")
+        elif st.session_state.csv_status_msg:
+            st.info(f"ℹ️ {st.session_state.csv_status_msg}")
 
-    with col_clear_p4:
-        if st.button("🗑️ Limpiar Decisiones", use_container_width=True):
-            st.session_state.routing_decisions = []
-            st.session_state.last_action_msg = "Decisiones de Paso 4 limpiadas"
+    with col_gemma_badge:
+        is_gemma_live = LocalGemmaClient.is_available()
+        if is_gemma_live:
+            models = LocalGemmaClient.get_available_models()
+            model_display = next((m for m in models if "gemma" in m.lower()), "gemma:2b")
+            st.markdown(f"""
+            <div style="background:#ecfdf5; border:1px solid #10b981; border-radius:8px; padding:12px 14px; margin-top:24px;">
+                <span style="font-weight:700; color:#065f46; font-size:0.92rem;">🤖 LLM Gemma Local Activo</span>
+                <p style="margin:2px 0 0 0; font-size:0.78rem; color:#047857;">Modelo detectado: <code>{model_display}</code></p>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:12px 14px; margin-top:24px;">
+                <span style="font-weight:700; color:#334155; font-size:0.92rem;">⚙️ Motor NLP Local (TF-IDF + Coseno)</span>
+                <p style="margin:2px 0 0 0; font-size:0.75rem; color:#64748b;">
+                    Para activar síntesis con Gemma: ejecuta <code>ollama run gemma:2b</code>
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # Botones de ejecución y limpieza
+    col_sim_btn, col_sim_clear = st.columns([2, 1])
+    with col_sim_btn:
+        if st.button("🔍 Analizar Similitud con Tickets Históricos (CSV)", type="primary", use_container_width=True):
+            # Obtener descripción del ticket de Paso 3
+            target_desc = ""
+            target_ticket_num = ""
+
+            if st.session_state.saved_tickets_list:
+                last_t = st.session_state.saved_tickets_list[-1]
+                target_ticket_num = last_t.get("Number", "TICKET").strip()
+                target_desc = (last_t.get("Description") or last_t.get("description") or last_t.get("More Information (Issue Description)")).strip()
+            elif st.session_state.detected_tickets:
+                last_t = st.session_state.detected_tickets[0]
+                target_ticket_num = last_t.get("number", "TICKET").strip()
+                target_desc = last_t.get("description", "").strip()
+
+            if not target_desc:
+                st.warning("⚠️ No se encontró la descripción del ticket en el Paso 3. Abre un ticket o extrae sus campos primero.")
+            elif st.session_state.similarity_analyzer.df_historical is None:
+                st.warning("⚠️ Por favor arrastra un archivo CSV arriba antes de presionar analizar.")
+            else:
+                with st.spinner(f"Analizando similitud de '{target_ticket_num}' contra tickets del CSV..."):
+                    res = st.session_state.similarity_analyzer.analyze_similarity(target_desc, top_k=15)
+                    res["ticket_number"] = target_ticket_num
+                    res["ticket_desc"] = target_desc
+                    st.session_state.similarity_results = res
+                    st.session_state.last_action_msg = f"Análisis completado: {res.get('matches_count', 0)} tickets similares encontrados"
+                    st.rerun()
+
+    with col_sim_clear:
+        if st.button("🗑️ Limpiar Análisis", use_container_width=True):
+            st.session_state.similarity_results = None
+            st.session_state.last_action_msg = "Resultados de análisis limpiados"
             st.rerun()
 
-    # TABLA DE DECISIONES DE ENRUTAMIENTO (PASO 4)
-    if st.session_state.routing_decisions:
-        df_routing = pd.DataFrame(st.session_state.routing_decisions)
-        routing_cols = ["Número de Ticket", "Descripción", "Equipo Destino", "Posible Queue", "Justificación", "Paso Evaluado"]
-        present_r_cols = [c for c in routing_cols if c in df_routing.columns]
-        df_routing = df_routing[present_r_cols]
+    # RESULTADOS DEL ANÁLISIS HISTÓRICO
+    if st.session_state.similarity_results:
+        res = st.session_state.similarity_results
+        m_count = res.get("matches_count", 0)
+        breakdown = res.get("queue_breakdown", {})
+        top_q = res.get("top_queue", "")
 
-        st.markdown(f"**Tabla de Enrutamiento y Posibles Soluciones (`{len(df_routing)}`):**")
-        st.dataframe(df_routing, use_container_width=True)
+        # Resumen principal requerido: Se encontraron X tickets extremadamente parecidos y se cerraron en estos Queues
+        st.markdown(f"""
+        <div style="background:#eff6ff; border:2px solid #3b82f6; border-radius:10px; padding:16px 20px; margin:16px 0;">
+            <h4 style="margin:0; color:#1e40af; font-size:1.15rem;">🎯 Conclusión del Análisis Histórico</h4>
+            <p style="margin:8px 0 10px 0; font-size:1.02rem; color:#1e293b; font-weight:600;">
+                Se encontraron <span style="color:#2563eb; font-size:1.25rem;">{m_count}</span> tickets extremadamente parecidos a tu descripción y se cerraron en estos Queues:
+            </p>
+            <ul style="margin:0; padding-left:22px; color:#334155; font-size:0.95rem;">
+                {''.join(f'<li><b>{q}:</b> {cnt} ticket(s) ({round(cnt/m_count*100, 1) if m_count else 0}%)</li>' for q, cnt in breakdown.items())}
+            </ul>
+            <div style="margin-top:12px; padding:8px 12px; background:#dbeafe; border-radius:6px; color:#1e40af; font-weight:700;">
+                👉 Queue Recomendado por Cierre Histórico: <span style="font-size:1.1rem; color:#1d4ed8;">{top_q}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        csv_routing_bytes = df_routing.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="💾 Descargar Tabla de Enrutamiento en CSV",
-            data=csv_routing_bytes,
-            file_name="enrutamiento_tickets_servicenow.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+        # Síntesis de Gemma si está presente
+        if res.get("gemma_synthesis"):
+            st.markdown(f"""
+            <div style="background:#f0fdf4; border-left:4px solid #16a34a; padding:12px 16px; border-radius:6px; margin:12px 0;">
+                <span style="font-weight:700; color:#15803d;">🤖 Análisis Explicativo de Gemma Local:</span>
+                <p style="margin:4px 0 0 0; color:#166534; font-size:0.92rem; white-space:pre-wrap;">
+                    {res.get("gemma_synthesis")}
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Tabla detallada de tickets similares
+        matches_list = res.get("detailed_matches", [])
+        if matches_list:
+            st.markdown(f"**Detalle de Tickets Históricos Más Parecidos (`{len(matches_list)}`):**")
+            df_matches = pd.DataFrame(matches_list)
+            cols_to_show = ["Ticket Histórico", "Descripción Histórica", "Queue de Cierre", "Similitud (%)", "Estado / Cierre"]
+            valid_cols = [c for c in cols_to_show if c in df_matches.columns]
+            df_matches_view = df_matches[valid_cols]
+
+            st.dataframe(df_matches_view, use_container_width=True)
+
+            csv_matches = df_matches_view.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="💾 Descargar Comparativa Histórica en CSV",
+                data=csv_matches,
+                file_name="comparativa_tickets_historicos.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
     else:
-        st.info("💡 Haz clic en **'🚀 Evaluar y Enrutar Tickets (Paso 4)'** para analizar los tickets y generar la tabla con el Número de Ticket, Descripción, Posible Queue y Posible Solución.")
+        st.info("💡 Arrastra tu archivo CSV de tickets cerrados arriba y presiona **'🔍 Analizar Similitud con Tickets Históricos'** para comparar la descripción de Paso 3.")
 
     st.caption(f"Última acción: **{st.session_state.last_action_msg}**")
 
