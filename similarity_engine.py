@@ -311,3 +311,4 @@ class HistoricalCSVAnalyzer:
             "gemma_synthesis": gemma_synthesis,
             "gemma_available": LocalGemmaClient.is_available()
         }
+

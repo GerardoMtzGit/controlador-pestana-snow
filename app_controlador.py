@@ -17,7 +17,6 @@ import pandas as pd
 import streamlit as st
 from tab_engine import CDPBrowserController, TabInfo
 from agent_bridge import HuggingFaceTabAgent
-from classifier_engine import TicketClassifierEngine, USER_ROUTING_MARKDOWN
 from similarity_engine import HistoricalCSVAnalyzer, LocalGemmaClient
 
 
@@ -64,15 +63,6 @@ if "extracted_ticket_data" not in st.session_state:
 
 if "saved_tickets_list" not in st.session_state:
     st.session_state.saved_tickets_list = []
-
-if "routing_markdown" not in st.session_state:
-    st.session_state.routing_markdown = USER_ROUTING_MARKDOWN
-
-if "classifier_engine" not in st.session_state:
-    st.session_state.classifier_engine = TicketClassifierEngine(st.session_state.routing_markdown)
-
-if "routing_decisions" not in st.session_state:
-    st.session_state.routing_decisions = []
 
 if "similarity_analyzer" not in st.session_state:
     st.session_state.similarity_analyzer = HistoricalCSVAnalyzer()
@@ -543,49 +533,35 @@ with col_ctrl:
     st.divider()
 
     # ================= FEATURE: PASO 4 - ANÁLISIS HISTÓRICO CSV Y LLM GEMMA =================
-    st.markdown("### 🧠 Paso 4: Análisis de Similitud Histórica con CSV y LLM Gemma")
-    st.caption("Arrastra un archivo CSV con tickets históricos para comparar su campo **Description** contra el ticket del Paso 3 y sugerir el Queue de cierre.")
+    st.markdown("### 🧠 Paso 4: Arrastra tu CSV para Análisis con LLM Local")
+    st.caption("Arrastra tu archivo CSV con tickets históricos para comparar su campo **Description** contra el ticket del Paso 3 y obtener la sugerencia de Queue con LLM local.")
 
-    # Cuadro para arrastrar CSV y estado de LLM Gemma
-    col_upload, col_gemma_badge = st.columns([2, 1])
-    with col_upload:
-        uploaded_csv = st.file_uploader(
-            "📂 Arrastra tu archivo CSV de tickets históricos aquí:",
-            type=["csv"],
-            key="uploader_csv_tickets",
-            help="Soporta exportaciones estándar de ServiceNow con columnas Number, Description, Assignment group, State."
-        )
+    # Cuadro directo y destacado para arrastrar el archivo CSV
+    uploaded_csv = st.file_uploader(
+        "📂 Arrastra aquí tu archivo CSV histórico de ServiceNow:",
+        type=["csv"],
+        key="uploader_csv_tickets_main",
+        help="Soporta exportaciones estándar de ServiceNow con columnas Number, Description, Assignment group, State."
+    )
 
-        if uploaded_csv is not None:
-            ok, msg = st.session_state.similarity_analyzer.load_csv(uploaded_csv)
-            st.session_state.csv_status_msg = msg
-            if ok:
-                st.success(f"✅ {msg}")
-            else:
-                st.error(f"❌ {msg}")
-        elif st.session_state.csv_status_msg:
-            st.info(f"ℹ️ {st.session_state.csv_status_msg}")
-
-    with col_gemma_badge:
-        is_gemma_live = LocalGemmaClient.is_available()
-        if is_gemma_live:
-            models = LocalGemmaClient.get_available_models()
-            model_display = next((m for m in models if "gemma" in m.lower()), "gemma:2b")
-            st.markdown(f"""
-            <div style="background:#ecfdf5; border:1px solid #10b981; border-radius:8px; padding:12px 14px; margin-top:24px;">
-                <span style="font-weight:700; color:#065f46; font-size:0.92rem;">🤖 LLM Gemma Local Activo</span>
-                <p style="margin:2px 0 0 0; font-size:0.78rem; color:#047857;">Modelo detectado: <code>{model_display}</code></p>
-            </div>
-            """, unsafe_allow_html=True)
+    if uploaded_csv is not None:
+        ok, msg = st.session_state.similarity_analyzer.load_csv(uploaded_csv)
+        st.session_state.csv_status_msg = msg
+        if ok:
+            st.success(f"✅ {msg}")
         else:
-            st.markdown("""
-            <div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:12px 14px; margin-top:24px;">
-                <span style="font-weight:700; color:#334155; font-size:0.92rem;">⚙️ Motor NLP Local (TF-IDF + Coseno)</span>
-                <p style="margin:2px 0 0 0; font-size:0.75rem; color:#64748b;">
-                    Para activar síntesis con Gemma: ejecuta <code>ollama run gemma:2b</code>
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
+            st.error(f"❌ {msg}")
+    elif st.session_state.csv_status_msg:
+        st.info(f"ℹ️ {st.session_state.csv_status_msg}")
+
+    # Indicador de estado del LLM Local (Gemma)
+    is_gemma_live = LocalGemmaClient.is_available()
+    if is_gemma_live:
+        models = LocalGemmaClient.get_available_models()
+        model_display = next((m for m in models if "gemma" in m.lower()), "gemma:2b")
+        st.success(f"🤖 **LLM Gemma Local Conectado:** Modelo `{model_display}` listo para generar explicaciones del enrutamiento.")
+    else:
+        st.info("⚙️ **Motor NLP Local Activo:** Procesará la similitud semántica con TF-IDF + Coseno. *(Opcional: ejecuta `ollama run gemma:2b` en tu terminal para activar explicaciones con Gemma)*.")
 
     # Botones de ejecución y limpieza
     col_sim_btn, col_sim_clear = st.columns([2, 1])
