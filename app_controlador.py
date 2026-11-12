@@ -2,10 +2,10 @@
 app_controlador.py
 Interfaz interactiva y clara para seleccionar y controlar pestañas de ServiceNow.
 Incluye:
-- Apertura garantizada en un solo disparo (sin doble ventana/pestaña).
+- Retraso inteligente de 10 segundos con barra de progreso visual al abrir ticket para permitir carga completa de ServiceNow.
+- Apertura garantizada en un solo disparo.
 - Botón destacado '🔙 Regresar a la Lista de Tickets'.
-- Actualización automática e inmediata de la vista espejo al abrir o volver.
-- Detección visual y controles completos.
+- Actualización sincronizada de la vista espejo.
 """
 
 import os
@@ -109,7 +109,7 @@ st.markdown("""
 <div class="se-banner">
     <h2 style="margin:0; font-size:1.4rem; font-weight:700;">⚡ Controlador Directo de Pestaña ServiceNow</h2>
     <p style="margin:4px 0 0 0; font-size:0.88rem; color:#cbd5e1;">
-        Paso 2: Apertura en 1 solo disparo, actualización instantánea de vista espejo y botón para regresar a la lista.
+        Paso 2: Apertura en 1 solo disparo, tiempo de espera calibrado (10s) para carga completa de ServiceNow y retorno a lista.
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -233,7 +233,7 @@ with col_ctrl:
         if st.button("🔙 Regresar a la Lista de Tickets", use_container_width=True):
             controller.go_back_to_list()
             st.session_state.last_action_msg = "Regresando a la vista de lista..."
-            # Actualizar espejo y re-escanear
+            time.sleep(2.0)
             st.session_state.last_frame = controller.take_screenshot()
             diag = controller.scan_tickets_with_diagnostics()
             st.session_state.detected_tickets = diag.get("tickets", [])
@@ -264,7 +264,7 @@ with col_ctrl:
         </div>
         """, unsafe_allow_html=True)
 
-    # FUNCIÓN DE BÚSQUEDA Y APERTURA DIRECTA (1 SOLO DISPARO)
+    # FUNCIÓN DE BÚSQUEDA Y APERTURA DIRECTA (1 SOLO DISPARO CON ESPERA DE 10s)
     st.markdown("#### 🔎 Búsqueda de Ticket")
     col_search_inp, col_search_btn = st.columns([2, 1])
 
@@ -281,14 +281,23 @@ with col_ctrl:
     with col_search_btn:
         if st.button("⚡ Abrir Ticket", type="primary", use_container_width=True):
             if search_num.strip():
-                with st.spinner(f"Abriendo {search_num}..."):
-                    res = controller.locate_and_open_ticket(search_num.strip())
-                    # Actualizar fotograma espejo inmediatamente
-                    st.session_state.last_frame = controller.take_screenshot()
-                    st.session_state.last_action_msg = f"Ticket {search_num} abierto en la pestaña origen"
-                    st.success(f"¡Ticket {search_num} abierto con éxito!")
-                    time.sleep(0.3)
-                    st.rerun()
+                controller.locate_and_open_ticket(search_num.strip())
+                st.session_state.last_action_msg = f"Abriendo ticket {search_num}..."
+
+                # Espera de 10 segundos con progreso visual para dar tiempo a ServiceNow
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                for i in range(10):
+                    time_left = 10 - i
+                    status_text.info(f"⏳ ServiceNow cargando ticket {search_num}... ({time_left}s restantes)")
+                    progress_bar.progress((i + 1) * 10)
+                    time.sleep(1.0)
+
+                status_text.success(f"¡Ticket {search_num} cargado!")
+                st.session_state.last_frame = controller.take_screenshot()
+                st.session_state.last_action_msg = f"Ticket {search_num} cargado y vista espejo actualizada"
+                time.sleep(0.3)
+                st.rerun()
 
     # LISTA DE TICKETS DETECTADOS AUTOMÁTICAMENTE
     if st.session_state.detected_tickets:
@@ -314,14 +323,23 @@ with col_ctrl:
                 """, unsafe_allow_html=True)
 
                 if st.button(f"👉 Abrir {t_num}", key=f"btn_open_pos_{t_num}_{idx}", use_container_width=True):
-                    with st.spinner(f"Abriendo {t_num} en la pestaña origen..."):
-                        res = controller.locate_and_open_ticket(t_num)
-                        # Actualizar fotograma espejo inmediatamente
-                        st.session_state.last_frame = controller.take_screenshot()
-                        st.session_state.last_action_msg = f"Ticket {t_num} abierto"
-                        st.success(f"¡Ticket {t_num} abierto!")
-                        time.sleep(0.3)
-                        st.rerun()
+                    controller.locate_and_open_ticket(t_num)
+                    st.session_state.last_action_msg = f"Abriendo ticket {t_num}..."
+
+                    # Espera de 10 segundos con progreso visual para dar tiempo a ServiceNow
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    for i in range(10):
+                        time_left = 10 - i
+                        status_text.info(f"⏳ ServiceNow cargando {t_num}... ({time_left}s restantes)")
+                        progress_bar.progress((i + 1) * 10)
+                        time.sleep(1.0)
+
+                    status_text.success(f"¡Ticket {t_num} cargado!")
+                    st.session_state.last_frame = controller.take_screenshot()
+                    st.session_state.last_action_msg = f"Ticket {t_num} cargado y vista espejo actualizada"
+                    time.sleep(0.3)
+                    st.rerun()
     else:
         st.info("💡 Enlaza tu pestaña de ServiceNow en el panel izquierdo; el escaneo se realiza automáticamente.")
 

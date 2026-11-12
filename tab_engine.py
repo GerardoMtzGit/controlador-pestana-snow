@@ -140,30 +140,23 @@ class CDPBrowserController:
         return diag
 
     def locate_and_open_ticket(self, ticket_number: str) -> Dict[str, Any]:
-        """PASO 2: Apertura única y sincronizada del ticket."""
+        """PASO 2: Apertura única en ServiceNow."""
         print(f"\n🎯 [PASO 2: APERTURA ÚNICA] Objetivo: {ticket_number}")
         client = self._get_active_native_client()
         if not client:
             return {"found": False, "error": "Cliente no disponible"}
 
         result = client.locate_and_open_ticket(ticket_number)
-
-        # Esperar carga del formulario y capturar inmediatamente el nuevo frame para la vista espejo
-        time.sleep(1.2)
-        fresh_frame = self.take_screenshot()
-        result["has_fresh_frame"] = fresh_frame is not None
         return result
 
     def go_back_to_list(self) -> bool:
-        """Regresa a la vista anterior (lista de tickets) y actualiza el espejo."""
+        """Regresa a la vista anterior (lista de tickets)."""
         print("\n🔙 [ACCIÓN] Regresando a la vista anterior...")
         client = self._get_active_native_client()
         if not client:
             return False
 
         success = client.go_back()
-        time.sleep(1.2)
-        self.take_screenshot()
         return success
 
     def scroll(self, direction: str = "down", amount: int = 400) -> bool:
