@@ -1,10 +1,7 @@
 """
 tab_engine.py
 Motor híbrido de descubrimiento y control de pestañas vía Chrome DevTools Protocol (CDP).
-Arquitectura ultra resiliente:
-- Usa CDPNativeClient vía WebSocket directo (INMUNE a 'Playwright connection closed').
-- Auto-reconexión instantánea con fallback a Playwright.
-- Cache permanente de fotogramas para que el espejo nunca desaparezca ni parpadee.
+Arquitectura ultra resiliente con detección y apertura de tickets de ServiceNow.
 """
 
 import json
@@ -99,7 +96,6 @@ class CDPBrowserController:
         if not port:
             return None
 
-        # Verificar si la pestaña sigue existiendo y obtener su websocket URL fresca
         tabs = self.list_tabs()
         target = next((t for t in tabs if t.tab_id == self.current_tab_id), None)
         if target and target.ws_url:
@@ -119,10 +115,27 @@ class CDPBrowserController:
             except Exception:
                 pass
 
-        # Inicializar cliente nativo inmediato
         client = self._get_active_native_client()
         self.take_screenshot()
         return True
+
+    def get_detected_tickets(self) -> List[Dict[str, str]]:
+        """Busca registros de tickets en la tabla visible de ServiceNow."""
+        client = self._get_active_native_client()
+        if not client:
+            return []
+        return client.detect_tickets_in_table()
+
+    def open_ticket(self, ticket_number: str) -> bool:
+        """Ubica el ticket en la columna Number y hace clic para abrirlo."""
+        client = self._get_active_native_client()
+        if not client:
+            return False
+
+        success = client.open_ticket_by_number(ticket_number)
+        time.sleep(1.2)  # Tiempo para que ServiceNow comience a cargar el formulario
+        self.take_screenshot()
+        return success
 
     def scroll(self, direction: str = "down", amount: int = 400) -> bool:
         """Realiza scroll hacia arriba o hacia abajo en la pestaña activa."""
@@ -159,10 +172,7 @@ class CDPBrowserController:
         return success
 
     def take_screenshot(self) -> Optional[bytes]:
-        """
-        Obtiene una captura de pantalla en bytes usando el protocolo CDP directo.
-        Nunca lanza 'Playwright connection closed' y siempre conserva el último frame.
-        """
+        """Obtiene una captura de pantalla en bytes usando el protocolo CDP directo."""
         client = self._get_active_native_client()
         if client:
             try:

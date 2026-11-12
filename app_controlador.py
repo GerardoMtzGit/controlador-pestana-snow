@@ -1,11 +1,11 @@
 """
 app_controlador.py
 Interfaz interactiva y clara para seleccionar y controlar pestañas de ServiceNow.
-Incluye:
-- Conexión CDP nativa ultra estable (sin caídas de Playwright).
-- Botones compatibles con nuevas versiones de Streamlit (width='stretch').
-- Detección visual y botón directo '⚡ Conectar a esta pestaña de ServiceNow'.
-- Scroll fluido y vista previa en tiempo real.
+Incluye Feature Paso 1:
+- Detección automática de registros/tickets en la columna Number (ej. SCTASK5214212, INC3446174).
+- Botones de 1-clic para abrir cualquier ticket directamente desde la interfaz.
+- Conexión CDP nativa ultra estable sin caídas.
+- Controles de movimiento y vista previa en tiempo real.
 """
 
 import os
@@ -44,6 +44,9 @@ if "last_action_msg" not in st.session_state:
 if "last_frame" not in st.session_state:
     st.session_state.last_frame = None
 
+if "detected_tickets" not in st.session_state:
+    st.session_state.detected_tickets = []
+
 controller: CDPBrowserController = st.session_state.controller
 agent: HuggingFaceTabAgent = st.session_state.agent
 
@@ -74,6 +77,14 @@ st.markdown("""
         border-radius: 8px;
         margin-bottom: 10px;
     }
+    .ticket-box {
+        background: #ffffff;
+        border: 1.5px solid #cbd5e1;
+        border-left: 4px solid #009530;
+        padding: 12px 14px;
+        border-radius: 8px;
+        margin-bottom: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -82,7 +93,7 @@ st.markdown("""
 <div class="se-banner">
     <h2 style="margin:0; font-size:1.4rem; font-weight:700;">⚡ Controlador Directo de Pestaña ServiceNow</h2>
     <p style="margin:4px 0 0 0; font-size:0.88rem; color:#cbd5e1;">
-        Selecciona tu pestaña de ServiceNow en el panel izquierdo y muévela, haz scroll o interactúa con ella desde aquí.
+        Paso 1: Detección y Apertura Automática de Tickets en la Columna <strong>Number</strong>.
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -134,7 +145,8 @@ with st.sidebar:
                 st.session_state.selected_tab_id = target_snow.tab_id
                 st.session_state.selected_tab_title = target_snow.title
                 st.session_state.last_action_msg = f"Enlazado a ServiceNow: {target_snow.title[:30]}"
-                st.success("¡Pestaña de ServiceNow vinculada permanentemente!")
+                st.session_state.detected_tickets = controller.get_detected_tickets()
+                st.success("¡Pestaña de ServiceNow vinculada!")
                 time.sleep(0.3)
                 st.rerun()
 
@@ -161,6 +173,7 @@ with st.sidebar:
                 st.session_state.selected_tab_id = selected_id
                 st.session_state.selected_tab_title = selected_title
                 st.session_state.last_action_msg = f"Enlazado a: {selected_title[:30]}"
+                st.session_state.detected_tickets = controller.get_detected_tickets()
                 st.success("¡Pestaña enlazada!")
                 time.sleep(0.3)
                 st.rerun()
@@ -181,14 +194,63 @@ with st.sidebar:
 col_ctrl, col_view = st.columns([1, 1], gap="medium")
 
 with col_ctrl:
+    # ================= FEATURE PASO 1: ABRIR TICKETS EN COLUMNA NUMBER =================
+    st.markdown("### 🎫 Paso 1: Detección y Apertura de Tickets (Columna Number)")
+
+    col_btn_detect, col_btn_first = st.columns([1, 1])
+    with col_btn_detect:
+        if st.button("🔍 Escanear Tickets en la Tabla", use_container_width=True):
+            st.session_state.detected_tickets = controller.get_detected_tickets()
+            st.session_state.last_action_msg = f"Escaneo: {len(st.session_state.detected_tickets)} ticket(s) encontrados"
+            st.rerun()
+
+    with col_btn_first:
+        if st.session_state.detected_tickets:
+            first_num = st.session_state.detected_tickets[0]["number"]
+            if st.button(f"⚡ Abrir Primer Ticket ({first_num})", type="primary", use_container_width=True):
+                ok = controller.open_ticket(first_num)
+                st.session_state.last_action_msg = f"Abriendo ticket {first_num} en la columna Number..."
+                st.rerun()
+
+    # Si aún no se han escaneado en esta sesión, intentar escanearlos automáticamente
+    if not st.session_state.detected_tickets and st.session_state.selected_tab_id:
+        st.session_state.detected_tickets = controller.get_detected_tickets()
+
+    # Renderizar tarjetas individuales para cada ticket encontrado
+    if st.session_state.detected_tickets:
+        st.markdown(f"**Registros visibles en la tabla:** `{len(st.session_state.detected_tickets)}`")
+        for t in st.session_state.detected_tickets:
+            t_num = t["number"]
+            t_desc = t.get("description", "Sin descripción")
+            t_state = t.get("state", "")
+            
+            with st.container():
+                st.markdown(f"""
+                <div class="ticket-box">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-weight:700; color:#0f172a; font-size:1.05rem;">🎯 {t_num}</span>
+                        <span style="font-size:0.75rem; background:#e2e8f0; color:#334155; padding:2px 8px; border-radius:4px; font-weight:600;">{t_state or 'Abierto'}</span>
+                    </div>
+                    <p style="margin:4px 0 6px 0; font-size:0.8rem; color:#475569; line-height:1.3;">
+                        {t_desc[:120]}{'...' if len(t_desc) > 120 else ''}
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if st.button(f"👉 Abrir ticket {t_num}", key=f"btn_open_{t_num}", use_container_width=True):
+                    ok = controller.open_ticket(t_num)
+                    st.session_state.last_action_msg = f"Clic en columna Number para abrir: {t_num}"
+                    st.success(f"¡Abriendo ticket {t_num}!")
+                    time.sleep(0.5)
+                    st.rerun()
+    else:
+        st.info("💡 Asegúrate de estar en la vista de lista/tabla de ServiceNow y presiona **'Escanear Tickets en la Tabla'** para listar los registros disponibles.")
+
+    st.divider()
+
+    # ================= CONTROLES GENERALES DE MOVIMIENTO =================
     st.subheader("🎮 Controles para Mover la Pestaña")
 
-    if st.session_state.selected_tab_id:
-        st.markdown(f"**Pestaña Activa:** `{st.session_state.selected_tab_title or st.session_state.selected_tab_id}`")
-    else:
-        st.info("💡 Enlaza una pestaña desde el menú lateral para activarla.")
-
-    # Botones de Scroll y Vista
     b1, b2, b3, b4 = st.columns(4)
     with b1:
         if st.button("⬆️ Subir", use_container_width=True):
@@ -213,8 +275,8 @@ with col_ctrl:
 
     st.divider()
 
-    # Acciones Especiales de ServiceNow
-    st.markdown("#### ⚡ Acciones en Tickets de ServiceNow")
+    # Acciones Especiales de Formulario
+    st.markdown("#### ⚡ Acciones en Formulario de ServiceNow")
     sn1, sn2 = st.columns(2)
     with sn1:
         if st.button("📝 Ir a Pestaña Notes", use_container_width=True):
@@ -229,37 +291,6 @@ with col_ctrl:
                    controller.click_element("button:has-text('Update')") or \
                    controller.click_element("Update")
             st.session_state.last_action_msg = "Clic en Guardar/Update" if done else "Botón Update no encontrado"
-            st.rerun()
-
-    st.divider()
-
-    # Comandos en lenguaje natural
-    st.markdown("#### 💬 Comandos por Texto")
-    prompt = st.text_input(
-        "Escribe qué quieres que haga la pestaña:",
-        placeholder="Ej: 'baja 500px', 'sube', 'haz clic en Notes', 'guardar'..."
-    )
-
-    if st.button("✨ Enviar Comando", use_container_width=True):
-        if prompt:
-            action_data = agent.run_sync(prompt)
-            act = action_data.get("action", "")
-            
-            if act == "scroll":
-                direction = action_data.get("direction", "down")
-                amt = action_data.get("amount", 400)
-                controller.scroll(direction, amt)
-                st.session_state.last_action_msg = f"Scroll {direction} ({amt}px)"
-            elif act == "click":
-                sel = action_data.get("selector", "")
-                done = controller.click_element(sel)
-                st.session_state.last_action_msg = f"Clic en {sel} ({'Éxito' if done else 'No hallado'})"
-            elif act == "reload":
-                controller.reload()
-                st.session_state.last_action_msg = "Recarga completada"
-            elif act == "answer":
-                st.info(action_data.get("message", ""))
-
             st.rerun()
 
     st.caption(f"Última acción: **{st.session_state.last_action_msg}**")
