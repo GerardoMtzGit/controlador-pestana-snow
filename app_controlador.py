@@ -9,6 +9,7 @@ Incluye:
 """
 
 import os
+import html
 import time
 import subprocess
 from io import BytesIO
@@ -608,29 +609,36 @@ with col_ctrl:
         breakdown = res.get("queue_breakdown", {})
         top_q = res.get("top_queue", "")
         target_tnum = res.get("ticket_number", "TICKET")
-        target_tdesc = res.get("ticket_desc", "Sin descripción registrada")
+        raw_desc = res.get("ticket_desc", "Sin descripción registrada")
+        target_tdesc = html.escape(str(raw_desc))
 
-        # Resumen principal requerido con la descripción textual del ticket del Paso 3
+        queue_items_html = "".join(
+            f"<li><b>{html.escape(str(q))}:</b> {cnt} ticket(s) ({round(cnt/m_count*100, 1) if m_count else 0}%)</li>"
+            for q, cnt in breakdown.items()
+        )
+        safe_top_q = html.escape(str(top_q))
+
+        # Resumen principal requerido con la descripción textual del ticket del Paso 3 (sin indentación de 4 espacios para evitar bloques pre/code)
         st.markdown(f"""
-        <div style="background:#eff6ff; border:2px solid #3b82f6; border-radius:10px; padding:18px 22px; margin:16px 0;">
-            <h4 style="margin:0; color:#1e40af; font-size:1.22rem;">🎯 Conclusión del Análisis Histórico</h4>
+<div style="background:#eff6ff; border:2px solid #3b82f6; border-radius:10px; padding:18px 22px; margin:16px 0;">
+<h4 style="margin:0 0 10px 0; color:#1e40af; font-size:1.22rem;">🎯 Conclusión del Análisis Histórico</h4>
 
-            <div style="background:#ffffff; border:1px solid #bfdbfe; border-radius:8px; padding:12px 16px; margin:12px 0;">
-                <span style="font-weight:700; color:#1e3a8a; font-size:0.95rem;">📝 Descripción Textual del Ticket Evaluado ({target_tnum}):</span>
-                <p style="margin:6px 0 0 0; color:#0f172a; font-size:0.92rem; white-space:pre-wrap; line-height:1.45;">{target_tdesc}</p>
-            </div>
+<div style="background:#ffffff; border:1px solid #bfdbfe; border-radius:8px; padding:12px 16px; margin:10px 0 14px 0;">
+<span style="font-weight:700; color:#1e3a8a; font-size:0.95rem;">📝 Descripción Textual del Ticket Evaluado ({target_tnum}):</span>
+<p style="margin:6px 0 0 0; color:#0f172a; font-size:0.92rem; white-space:pre-wrap; line-height:1.45;">{target_tdesc}</p>
+</div>
 
-            <p style="margin:8px 0 10px 0; font-size:1.05rem; color:#1e293b; font-weight:700;">
-                Se encontraron <span style="color:#2563eb; font-size:1.3rem;">{m_count}</span> tickets extremadamente parecidos a tu descripción y se cerraron en estos Queues:
-            </p>
-            <ul style="margin:0; padding-left:22px; color:#334155; font-size:0.98rem; line-height:1.5;">
-                {''.join(f'<li><b>{q}:</b> {cnt} ticket(s) ({round(cnt/m_count*100, 1) if m_count else 0}%)</li>' for q, cnt in breakdown.items())}
-            </ul>
-            <div style="margin-top:14px; padding:10px 14px; background:#dbeafe; border-radius:6px; color:#1e40af; font-weight:700; font-size:1.05rem;">
-                👉 Queue Recomendado por Cierre Histórico: <span style="font-size:1.15rem; color:#1d4ed8;">{top_q}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+<p style="margin:10px 0 8px 0; font-size:1.05rem; color:#1e293b; font-weight:700;">
+Se encontraron <span style="color:#2563eb; font-size:1.3rem;">{m_count}</span> tickets extremadamente parecidos a tu descripción y se cerraron en estos Queues:
+</p>
+<ul style="margin:0; padding-left:22px; color:#334155; font-size:0.98rem; line-height:1.6;">
+{queue_items_html}
+</ul>
+<div style="margin-top:14px; padding:10px 14px; background:#dbeafe; border-radius:6px; color:#1e40af; font-weight:700; font-size:1.05rem;">
+👉 Queue Recomendado por Cierre Histórico: <span style="font-size:1.15rem; color:#1d4ed8;">{safe_top_q}</span>
+</div>
+</div>
+""", unsafe_allow_html=True)
 
         # Síntesis de Gemma si está presente
         if res.get("gemma_synthesis"):
