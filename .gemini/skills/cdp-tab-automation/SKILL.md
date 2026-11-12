@@ -18,3 +18,4 @@ Esta habilidad proporciona el estándar de ingeniería para conectarse a un nave
 - **Scroll interactivo:** `mouse.wheel(delta_x, delta_y)` o `evaluate("window.scrollBy(...)")`.
 - **Clicks y Typing:** Enviar eventos exactos de mouse y teclado a selectores o coordenadas relativas.
 - **Evaluación remota:** Inyección de scripts JavaScript para extraer el DOM visible sin recargar la página.
+

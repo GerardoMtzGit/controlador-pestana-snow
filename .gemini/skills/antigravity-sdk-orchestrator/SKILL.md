@@ -21,3 +21,4 @@ Esta habilidad estandariza el uso del paquete oficial `google-antigravity` en Py
 
 ## 3. Disparo de Acciones
 - Traducción de intenciones en lenguaje natural ("busca el ticket INC123", "baja a las notas", "actualiza el grupo") en invocaciones CDP precisas.
+

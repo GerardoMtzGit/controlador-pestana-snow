@@ -230,3 +230,4 @@ with col_right:
         st.image(image, caption="Pestaña activa en tiempo real", use_container_width=True)
     else:
         st.warning("Selecciona y activa una pestaña desde el panel lateral izquierdo para ver su contenido en vivo aquí.")
+

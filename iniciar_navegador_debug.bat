@@ -31,3 +31,4 @@ echo.
 echo Listo. Ya puedes abrir ServiceNow o cualquier otra pestana y seleccionarla en tu programa.
 timeout /t 3 >nul
 exit /b 0
+

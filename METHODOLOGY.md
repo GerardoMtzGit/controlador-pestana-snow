@@ -42,3 +42,4 @@ Este documento define la metodología de desarrollo estructurada en 5 fases (Spe
 
 4. **`launch_browser_debug.bat`**:
    - Script para iniciar Chrome/Edge con depuración remota activada sin alterar el perfil principal ni requerir extensiones complejas.
+

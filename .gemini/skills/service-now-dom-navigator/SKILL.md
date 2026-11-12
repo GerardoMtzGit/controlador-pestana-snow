@@ -21,3 +21,4 @@ Esta habilidad documenta las peculiaridades del DOM en ServiceNow para evitar fa
 ## 3. Manejo de Esperas
 - Usar `wait_for_selector(..., state="visible", timeout=5000)` antes de interactuar.
 - Realizar scroll antes de hacer click para asegurar que el elemento esté en el viewport.
+

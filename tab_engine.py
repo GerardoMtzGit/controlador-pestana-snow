@@ -200,3 +200,4 @@ class CDPBrowserController:
                 self.playwright.stop()
         except Exception:
             pass
+

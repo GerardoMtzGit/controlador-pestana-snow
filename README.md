@@ -46,3 +46,4 @@ controlador_pestana/
    - En el panel lateral, verás la lista automática de pestañas abiertas.
    - Selecciona la pestaña de **ServiceNow** y haz clic en **"⚡ Activar y Enlazar Pestaña"**.
    - Usa los botones directos (**Subir, Bajar, Recargar, Enfocar, Ir a Notes, Guardar**) o escribe comandos en lenguaje natural con el Agente IA de Google Antigravity.
+

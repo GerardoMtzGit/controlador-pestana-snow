@@ -9,3 +9,4 @@ echo.
 
 python -m streamlit run app_controlador.py
 pause
+
