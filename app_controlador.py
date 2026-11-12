@@ -17,7 +17,7 @@ import pandas as pd
 import streamlit as st
 from tab_engine import CDPBrowserController, TabInfo
 from agent_bridge import HuggingFaceTabAgent
-from classifier_engine import TicketClassifierEngine, DEFAULT_ROUTING_MARKDOWN
+from classifier_engine import TicketClassifierEngine, USER_ROUTING_MARKDOWN
 
 
 st.set_page_config(
@@ -65,7 +65,7 @@ if "saved_tickets_list" not in st.session_state:
     st.session_state.saved_tickets_list = []
 
 if "routing_markdown" not in st.session_state:
-    st.session_state.routing_markdown = DEFAULT_ROUTING_MARKDOWN
+    st.session_state.routing_markdown = USER_ROUTING_MARKDOWN
 
 if "classifier_engine" not in st.session_state:
     st.session_state.classifier_engine = TicketClassifierEngine(st.session_state.routing_markdown)
@@ -555,7 +555,7 @@ with col_ctrl:
     # TABLA DE DECISIONES DE ENRUTAMIENTO (PASO 4)
     if st.session_state.routing_decisions:
         df_routing = pd.DataFrame(st.session_state.routing_decisions)
-        routing_cols = ["Número de Ticket", "Descripción", "Posible Queue", "Posible Solución", "Confianza"]
+        routing_cols = ["Número de Ticket", "Descripción", "Equipo Destino", "Posible Queue", "Justificación", "Paso Evaluado"]
         present_r_cols = [c for c in routing_cols if c in df_routing.columns]
         df_routing = df_routing[present_r_cols]
 
