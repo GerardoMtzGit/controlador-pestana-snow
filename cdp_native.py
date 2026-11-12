@@ -78,11 +78,12 @@ class CDPNativeClient:
 
     def click_selector(self, selector: str) -> bool:
         """Hace clic en un elemento CSS/XPath o dentro de iframe gsft_main en ServiceNow."""
+        selector_clean = selector.replace('"', '\\"').replace("'", "\\'")
         expr = f"""
         (function() {{
             function tryClick(doc) {{
                 try {{
-                    let el = doc.querySelector("{selector}");
+                    let el = doc.querySelector("{selector_clean}");
                     if (el) {{
                         el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
                         el.click();
@@ -101,7 +102,7 @@ class CDPNativeClient:
 
             let btns = Array.from(document.querySelectorAll("button, a, span"));
             for (let b of btns) {{
-                if (b.innerText && b.innerText.trim().toLowerCase().includes("{selector.lower()}")) {{
+                if (b.innerText && b.innerText.trim().toLowerCase().includes("{selector_clean.lower()}")) {{
                     b.click();
                     return true;
                 }}
@@ -130,7 +131,6 @@ class CDPNativeClient:
             logs.push("URL actual: " + window.location.href);
             logs.push("Título actual: " + document.title);
 
-            // 1. Recopilar todos los documentos (principal + todos los iframes)
             let docs = [document];
             let allIframes = Array.from(document.querySelectorAll("iframe, frame"));
             logs.push("iFrames detectados: " + allIframes.length);
@@ -148,7 +148,6 @@ class CDPNativeClient:
                 }
             });
 
-            // 2. Extraer el conteo del Queue (ej: '1 to 2 of 2' de la barra inferior)
             for (let doc of docs) {
                 let pageTexts = (doc.body ? doc.body.innerText : "");
                 let qMatch = pageTexts.match(/\\b(\\d+)\\s+to\\s+(\\d+)\\s+of\\s+(\\d+)\\b/i) ||
@@ -161,11 +160,9 @@ class CDPNativeClient:
                 }
             }
 
-            // 3. Regex para coincidencia de tickets en cualquier elemento o tabla
             let ticketRegex = /\\b(INC\\d{5,10}|SCTASK\\d{5,10}|TASK\\d{5,10}|RITM\\d{5,10}|REQ\\d{5,10})\\b/gi;
 
             for (let doc of docs) {
-                // Estrategia A: Buscar filas de tablas de ServiceNow (tr)
                 let rows = Array.from(doc.querySelectorAll("tr, div[role='row']"));
                 logs.push("Filas (tr/row) evaluadas en documento: " + rows.length);
 
@@ -187,7 +184,6 @@ class CDPNativeClient:
                     }
                 }
 
-                // Estrategia B: Buscar enlaces directos (a)
                 let links = Array.from(doc.querySelectorAll("a, span, td"));
                 for (let el of links) {
                     let txt = (el.innerText || "").trim();
@@ -205,7 +201,6 @@ class CDPNativeClient:
                 }
             }
 
-            // Estrategia C: Fallback a regex global en todo el HTML si lo anterior no encontró
             if (foundTickets.length === 0) {
                 logs.push("Estrategias A y B no arrojaron tickets. Probando escaneo Regex global...");
                 for (let doc of docs) {
@@ -255,20 +250,28 @@ class CDPNativeClient:
             let targetNum = "{num_clean}";
             let docs = [document];
             let allIframes = Array.from(document.querySelectorAll("iframe, frame"));
-            allIframes.forEach(ifr => {{
-                try {{ if (ifr.contentDocument) docs.push(ifr.contentDocument); }} catch(e) {{}}
+            allIframes.forEach(function(ifr) {{
+                try {{
+                    if (ifr.contentDocument) {{
+                        docs.push(ifr.contentDocument);
+                    }}
+                }} catch(e) {{}}
             }});
 
-            for (let doc of docs) {
-                // 1. Buscar enlaces con el número exacto
+            for (let doc of docs) {{
                 let links = Array.from(doc.querySelectorAll("a, td, span, tr, [role='gridcell']"));
                 for (let el of links) {{
                     let txt = (el.innerText || "").trim().toUpperCase();
-                    if (txt === targetNum || txt.includes(targetNum) || el.getAttribute("href")?.includes(targetNum)) {{
-                        let clickable = (el.tagName.toLowerCase() === 'a') ? el : (el.querySelector("a") || el);
-                        clickable.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                        clickable.click();
-                        return true;
+                    let href = el.getAttribute ? (el.getAttribute("href") || "") : "";
+                    if (txt === targetNum || txt.includes(targetNum) || href.includes(targetNum)) {{
+                        let clickable = (el.tagName && el.tagName.toLowerCase() === 'a') ? el : (el.querySelector("a") || el);
+                        if (clickable && clickable.scrollIntoView) {{
+                            clickable.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                        }}
+                        if (clickable && clickable.click) {{
+                            clickable.click();
+                            return true;
+                        }}
                     }}
                 }}
             }}
