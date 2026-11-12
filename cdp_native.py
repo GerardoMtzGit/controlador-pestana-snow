@@ -235,9 +235,11 @@ class CDPNativeClient:
             res = self.send("Runtime.evaluate", {"expression": expr, "returnByValue": True})
             if "result" in res and "value" in res["result"] and isinstance(res["result"]["value"], dict):
                 return res["result"]["value"]
-        except Exception as e:
-            print(f"[CDP Native] Error al detectar tickets: {e}")
-        return {"tickets": [], "totalQueueText": "0 tickets", "logs": [f"Error ejecutando script de escaneo: {e}"]}
+            error_details = res.get("result", {}).get("description", str(res))
+            return {"tickets": [], "totalQueueText": "0 tickets", "logs": [f"Script evaluado sin retorno de valor dict: {error_details}"]}
+        except Exception as ex:
+            print(f"[CDP Native] Error al detectar tickets: {ex}")
+            return {"tickets": [], "totalQueueText": "0 tickets", "logs": [f"Error ejecutando script de escaneo: {ex}"]}
 
     def open_ticket_by_number(self, ticket_number: str) -> bool:
         """
