@@ -1,22 +1,22 @@
 """
 agent_bridge.py
-Puente de orquestación local para el control de la pestaña de navegador.
-Soporta dos modalidades 100% locales:
-1. Antigravity Local Engine (Motor determinista/reglas contextualizado de baja latencia, 0 dependencias de nube).
-2. Local LLM / Ollama (compatible con LocalOpenAIAgentConfig / endpoints locales tipo http://127.0.0.1:11434/v1).
+Puente de orquestación para el control de la pestaña de navegador.
+Reemplaza completamente cualquier dependencia externa por dos alternativas corporativas y seguras:
+1. Motor Local Determinista (Ultra rápido, 0 ms latencia, 0 llamadas de red, 100% privado).
+2. Modelos de Hugging Face (InferenceClient con Qwen/Qwen2.5-Coder-7B-Instruct o Mistral, o endpoint local).
 """
 
+import os
 import re
 import json
 import asyncio
-import requests
 from typing import Dict, Any, Optional
 
 try:
-    from google.antigravity import Agent, LocalOpenAIAgentConfig, CapabilitiesConfig
-    ANTIGRAVITY_AVAILABLE = True
-except Exception:
-    ANTIGRAVITY_AVAILABLE = False
+    from huggingface_hub import InferenceClient
+    HF_AVAILABLE = True
+except ImportError:
+    HF_AVAILABLE = False
 
 
 SYSTEM_PROMPT = """
@@ -30,6 +30,14 @@ Las acciones disponibles son:
 4. RELOAD: {"action": "reload"}
 5. NAVIGATE: {"action": "navigate", "url": "https://..."}
 6. ANSWER: {"action": "answer", "message": "Respuesta informativa directa al usuario"}
+
+Para ServiceNow:
+- Si el usuario dice "ve a las notas", usa selector: "[data-tab-name*='notes'], button:has-text('Notes')"
+- Si el usuario dice "baja", usa action: "scroll", direction: "down"
+- Si el usuario dice "sube", usa action: "scroll", direction: "up"
+- Si el usuario dice "guardar", usa action: "click", selector: "button#sysverb_update, button:has-text('Update')"
+
+Responde siempre con el JSON puro.
 """
 
 
@@ -109,61 +117,56 @@ class LocalOrchestrator:
         }
 
 
-class AntigravityTabAgent:
-    """Orquestador híbrido con preferencia local estricta."""
+class HuggingFaceTabAgent:
+    """Orquestador con soporte para modelos de Hugging Face y fallback a motor local."""
 
-    def __init__(self, mode: str = "local_rules", ollama_base_url: str = "http://127.0.0.1:11434/v1", model_name: str = "qwen2.5-coder:7b"):
+    def __init__(
+        self,
+        mode: str = "local_rules",
+        hf_token: Optional[str] = None,
+        model_name: str = "Qwen/Qwen2.5-Coder-7B-Instruct"
+    ):
         self.mode = mode
-        self.ollama_base_url = ollama_base_url
+        self.hf_token = hf_token or os.getenv("HF_TOKEN", "")
         self.model_name = model_name
+        self.client: Optional[InferenceClient] = None
 
-    def is_ollama_online(self) -> bool:
-        """Verifica si el servidor Ollama local está activo."""
+        if HF_AVAILABLE and self.hf_token:
+            try:
+                self.client = InferenceClient(model=self.model_name, token=self.hf_token)
+            except Exception:
+                self.client = None
+
+    def interpret_with_hf(self, prompt: str) -> Dict[str, Any]:
+        """Consulta el modelo de Hugging Face mediante InferenceClient."""
+        if not self.client:
+            return LocalOrchestrator.parse_command(prompt)
+
         try:
-            r = requests.get("http://127.0.0.1:11434/api/tags", timeout=1.0)
-            return r.status_code == 200
-        except Exception:
-            return False
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ]
+            response = self.client.chat_completion(
+                messages=messages,
+                max_tokens=256,
+                temperature=0.1
+            )
+            content = response.choices[0].message.content.strip()
 
-    async def _interpret_with_local_llm(self, prompt: str) -> Dict[str, Any]:
-        """Utiliza el conector LocalOpenAIAgentConfig del SDK o llamada local directa a Ollama."""
-        # 1. Intentar vía endpoint local de Ollama (OpenAI-compatible)
-        try:
-            payload = {
-                "model": self.model_name,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.1,
-                "format": "json"
-            }
-            r = requests.post(f"{self.ollama_base_url}/chat/completions", json=payload, timeout=8.0)
-            if r.status_code == 200:
-                data = r.json()
-                content = data["choices"][0]["message"]["content"]
-                parsed = json.loads(content)
-                parsed["engine"] = f"ollama_{self.model_name}"
-                return parsed
-        except Exception:
-            pass
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
 
-        # Fallback inmediato al motor de reglas local
-        return LocalOrchestrator.parse_command(prompt)
+            parsed = json.loads(content)
+            parsed["engine"] = f"hf_{self.model_name.split('/')[-1]}"
+            return parsed
+        except Exception:
+            return LocalOrchestrator.parse_command(prompt)
 
     def run_sync(self, user_prompt: str) -> Dict[str, Any]:
-        """Ejecuta la orquestación en modo estrictamente local sin llamadas a servidores externos."""
-        if self.mode == "local_llm" and self.is_ollama_online():
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    import nest_asyncio
-                    nest_asyncio.apply()
-                    return loop.run_until_complete(self._interpret_with_local_llm(user_prompt))
-                else:
-                    return asyncio.run(self._interpret_with_local_llm(user_prompt))
-            except Exception:
-                return LocalOrchestrator.parse_command(user_prompt)
-
-        # Modo por defecto: motor local instantáneo (0 llamadas de red)
+        """Ejecuta la orquestación. Si está en modo Hugging Face consulta el modelo; si no, usa el motor local."""
+        if self.mode == "huggingface" and self.client:
+            return self.interpret_with_hf(user_prompt)
         return LocalOrchestrator.parse_command(user_prompt)

@@ -2,7 +2,7 @@
 bootstrap.py
 Módulo de inicialización, verificación automática de dependencias, skills y entorno.
 Se ejecuta ANTES de abrir la aplicación principal:
-1. Revisa librerías de Python requeridas (Streamlit, Playwright, google-antigravity, Requests, Pillow, nest-asyncio).
+1. Revisa librerías de Python requeridas (Streamlit, Playwright, huggingface_hub, Requests, Pillow, nest-asyncio).
 2. Instala automáticamente cualquier librería faltante mediante pip.
 3. Asegura que los navegadores requeridos por Playwright estén instalados.
 4. Verifica que los directorios y archivos de skills requeridos (.gemini/skills/) existan.
@@ -17,7 +17,7 @@ from pathlib import Path
 REQUIRED_LIBRARIES = {
     "streamlit": "streamlit>=1.35.0",
     "playwright": "playwright>=1.44.0",
-    "google.antigravity": "google-antigravity>=0.1.23",
+    "huggingface_hub": "huggingface_hub>=0.23.0",
     "requests": "requests>=2.31.0",
     "PIL": "pillow>=10.0.0",
     "nest_asyncio": "nest-asyncio>=1.6.0"
@@ -25,7 +25,7 @@ REQUIRED_LIBRARIES = {
 
 REQUIRED_SKILLS = [
     "cdp-tab-automation",
-    "antigravity-sdk-orchestrator",
+    "huggingface-orchestrator",
     "service-now-dom-navigator"
 ]
 
@@ -35,7 +35,7 @@ SKILLS_DIR = ROOT_DIR / ".gemini" / "skills"
 
 def check_and_install_libraries():
     """Comprueba cada módulo requerido y lo instala automáticamente si falta."""
-    print("🔍 [1/4] Verificando librerías de Python requeridas...")
+    print("🔍 [1/4] Verificando librerías requeridas (Hugging Face / Web)...")
     missing_packages = []
 
     for module_name, pip_spec in REQUIRED_LIBRARIES.items():
@@ -43,7 +43,7 @@ def check_and_install_libraries():
             importlib.import_module(module_name)
             print(f"  ✓ {module_name} instalado correctamente.")
         except ImportError:
-            print(f"  ✗ {module_name} NO encontrado. Se programará su instalación...")
+            print(f"  ✗ {module_name} NO encontrado. Se instalará automáticamente...")
             missing_packages.append(pip_spec)
 
     if missing_packages:
@@ -53,7 +53,7 @@ def check_and_install_libraries():
             cmd = [sys.executable, "-m", "pip", "install", pkg]
             res = subprocess.run(cmd, capture_output=True, text=True)
             if res.returncode != 0:
-                print(f"[ADVERTENCIA] Falló instalación estándar de {pkg}. Intentando con --user...")
+                print(f"[ADVERTENCIA] Intentando instalar con --user para {pkg}...")
                 subprocess.run([sys.executable, "-m", "pip", "install", "--user", pkg], check=True)
         print("  ✓ Todas las librerías se instalaron exitosamente.\n")
     else:
@@ -85,12 +85,12 @@ description: Conexión, descubrimiento, selección e inspección en vivo de pest
 # Skill: CDP Tab Automation
 Controla pestañas abiertas en el puerto 9222 sin perder sesiones ni credenciales corporativas.
 """,
-        "antigravity-sdk-orchestrator": """---
-name: antigravity-sdk-orchestrator
-description: Orquestación del Agente de Inteligencia Artificial mediante google-antigravity SDK.
+        "huggingface-orchestrator": """---
+name: huggingface-orchestrator
+description: Orquestación del Agente de Inteligencia Artificial mediante modelos de Hugging Face (InferenceClient / Qwen2.5 / Mistral) o motor local determinista.
 ---
-# Skill: Antigravity SDK Orchestrator
-Interpreta comandos en lenguaje natural y genera acciones de control web mediante LocalAgentConfig.
+# Skill: Hugging Face Orchestrator
+Interpreta comandos en lenguaje natural y genera acciones de control web (scroll, clics, notas, updates) usando Hugging Face o reglas locales de alta velocidad.
 """,
         "service-now-dom-navigator": """---
 name: service-now-dom-navigator
@@ -147,4 +147,3 @@ if __name__ == "__main__":
     check_playwright_browsers()
     check_and_restore_skills()
     start_application()
-

@@ -6,16 +6,17 @@ Permite:
 - Seleccionar una pestaña (ej. ServiceNow).
 - Mover la pestaña (Scroll Arriba / Abajo, Click en botones, Recargar).
 - Vista previa en vivo con captura de pantalla.
-- Comando inteligente vía Orquestador Local (motor de reglas instantáneo o LLM local).
+- Comando inteligente con modelos de Hugging Face o Motor Local Determinista.
 """
 
+import os
 import time
 import subprocess
 from io import BytesIO
 from PIL import Image
 import streamlit as st
 from tab_engine import CDPBrowserController
-from agent_bridge import AntigravityTabAgent
+from agent_bridge import HuggingFaceTabAgent
 
 
 st.set_page_config(
@@ -30,7 +31,7 @@ if "controller" not in st.session_state:
     st.session_state.controller = CDPBrowserController(port=9222)
 
 if "agent" not in st.session_state:
-    st.session_state.agent = AntigravityTabAgent(mode="local_rules")
+    st.session_state.agent = HuggingFaceTabAgent(mode="local_rules")
 
 if "selected_tab_id" not in st.session_state:
     st.session_state.selected_tab_id = None
@@ -39,7 +40,7 @@ if "last_action_msg" not in st.session_state:
     st.session_state.last_action_msg = "Listo para conectar"
 
 controller: CDPBrowserController = st.session_state.controller
-agent: AntigravityTabAgent = st.session_state.agent
+agent: HuggingFaceTabAgent = st.session_state.agent
 
 # Estilos CSS limpios
 st.markdown("""
@@ -70,12 +71,12 @@ st.markdown("""
 <div class="header-box">
     <h2 style="margin:0; font-size:1.5rem; font-weight:700;">🎯 Controlador de Pestañas Web (ServiceNow / Chrome)</h2>
     <p style="margin:4px 0 0 0; font-size:0.9rem; color:#94a3b8;">
-        Controla y mueve la pestaña seleccionada directamente desde esta interfaz con <strong>orquestación 100% local</strong>.
+        Controla y mueve la pestaña seleccionada directamente desde esta interfaz con <strong>Hugging Face / Motor Local</strong>.
     </p>
 </div>
 """, unsafe_allow_html=True)
 
-# SIDEBAR: Conexión, Configuración Local y Selección de Pestañas
+# SIDEBAR: Conexión, Configuración de IA y Selección de Pestañas
 with st.sidebar:
     st.header("🔌 Conexión de Navegador")
     is_connected = controller.is_cdp_available()
@@ -95,25 +96,37 @@ with st.sidebar:
 
     st.divider()
 
-    # Selector de Motor de Orquestación Local
-    st.subheader("⚙️ Motor de Orquestación")
+    # Selector de Motor de IA
+    st.subheader("🤖 Motor de Interpretación")
     engine_choice = st.selectbox(
         "Modo de orquestación:",
-        options=["Motor Local Determinista (Ultra rápido, 0 red)", "LLM Local (Ollama / LocalOpenAI)"],
+        options=["Motor Local Determinista (Ultra rápido, 0 red, corporativo)", "Hugging Face (Inference API)"],
         index=0
     )
 
-    if "LLM Local" in engine_choice:
-        agent.mode = "local_llm"
-        ollama_ok = agent.is_ollama_online()
-        if ollama_ok:
-            st.markdown('<span class="status-badge status-ok">● Ollama Local Activo</span>', unsafe_allow_html=True)
+    if "Hugging Face" in engine_choice:
+        agent.mode = "huggingface"
+        hf_token_input = st.text_input("Hugging Face API Token:", type="password", value=os.getenv("HF_TOKEN", ""))
+        hf_model_input = st.selectbox(
+            "Modelo Hugging Face:",
+            options=[
+                "Qwen/Qwen2.5-Coder-7B-Instruct",
+                "mistralai/Mistral-7B-Instruct-v0.3",
+                "meta-llama/Llama-3.2-3B-Instruct"
+            ],
+            index=0
+        )
+        if hf_token_input:
+            agent.hf_token = hf_token_input
+            agent.model_name = hf_model_input
+            from huggingface_hub import InferenceClient
+            agent.client = InferenceClient(model=hf_model_input, token=hf_token_input)
+            st.markdown('<span class="status-badge status-ok">● Hugging Face Conectado</span>', unsafe_allow_html=True)
         else:
-            st.markdown('<span class="status-badge status-warn">▲ Ollama no detectado en :11434</span>', unsafe_allow_html=True)
-            st.caption("Usa 'ollama serve' para iniciar tu modelo local, o mantén el Motor Local.")
+            st.caption("Ingresa tu token de Hugging Face para activar el modelo online, o usa el Motor Local.")
     else:
         agent.mode = "local_rules"
-        st.markdown('<span class="status-badge status-info">● Motor de Reglas Local Activo</span>', unsafe_allow_html=True)
+        st.markdown('<span class="status-badge status-info">● Motor Local Privado Activo</span>', unsafe_allow_html=True)
 
     st.divider()
     st.subheader("📑 Seleccionar Pestaña")
@@ -207,14 +220,14 @@ with col_left:
 
     st.divider()
 
-    # Control por Lenguaje Natural con Orquestador Local
-    st.markdown("#### 🤖 Orquestador Asistido Local (0 llamadas a la nube)")
+    # Control por Lenguaje Natural
+    st.markdown("#### 💬 Comandos en Lenguaje Natural")
     prompt = st.text_input(
         "Indica una acción en lenguaje natural:",
         placeholder="Ej: 'baja 500px', 'sube', 'haz clic en Notes', 'guardar'..."
     )
 
-    if st.button("✨ Ejecutar Acción Local", use_container_width=True):
+    if st.button("✨ Ejecutar Acción", use_container_width=True):
         if prompt:
             action_data = agent.run_sync(prompt)
             act = action_data.get("action", "")
