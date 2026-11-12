@@ -5,8 +5,7 @@ Se comunica directamente con el navegador vía WebSocket y HTTP estándar:
 - 0 caídas por cierre de contexto de Playwright.
 - Funciona perfecto con el ciclo de vida de Streamlit.
 - Diagnóstico y logging detallado en consola.
-- Escaneo profundo multietapa: DOM principal, iframes anidados, Web Components con Shadow DOM
-  (now-content-renderer, macroponent-*, etc. de Next Experience).
+- Escaneo profundo multietapa: DOM principal, iframes anidados (gsft_main), Web Components con Shadow DOM.
 """
 
 import json
@@ -132,7 +131,6 @@ class CDPNativeClient:
             logs.push("URL actual: " + window.location.href);
             logs.push("Título: " + document.title);
 
-            // Función recursiva para atravesar Shadow DOM y recopilar todos los nodos y documentos
             let allRoots = [document];
             let allTexts = [];
 
@@ -163,11 +161,9 @@ class CDPNativeClient:
             collectShadowRoots(document.body || document.documentElement);
             logs.push("Roots inspeccionados (incluyendo Shadow DOM): " + allRoots.length);
 
-            // Regex de tickets de ServiceNow
             let ticketRegex = /\\b(INC\\d{5,10}|SCTASK\\d{5,10}|TASK\\d{5,10}|RITM\\d{5,10}|REQ\\d{5,10})\\b/gi;
 
             for (let root of allRoots) {
-                // 1. Extraer conteo de Queue en texto
                 let textContent = root.textContent || (root.body ? root.body.innerText : "") || "";
                 if (textContent) allTexts.push(textContent);
 
@@ -179,7 +175,6 @@ class CDPNativeClient:
                     logs.push("Conteo de cola detectado: " + totalQueueCount);
                 }
 
-                // 2. Buscar enlaces o elementos clickeables que contengan números de ticket
                 let candidates = Array.from(root.querySelectorAll("a, td, span, div, p"));
                 for (let el of candidates) {
                     let txt = (el.innerText || el.textContent || "").trim();
@@ -187,7 +182,6 @@ class CDPNativeClient:
                     if (m) {
                         let num = m[1].toUpperCase();
                         if (!foundTickets.some(t => t.number === num)) {
-                            // Extraer descripción del contenedor padre o fila si es posible
                             let row = el.closest("tr, div[role='row'], [role='gridcell']");
                             let desc = "";
                             if (row) {
@@ -203,7 +197,6 @@ class CDPNativeClient:
                 }
             }
 
-            // 3. Si aún no encuentra por selectores, aplicar Regex a todo el texto concatenado
             if (foundTickets.length === 0) {
                 logs.push("Búsqueda estructurada no halló tickets. Aplicando Regex en los textos de todos los Roots...");
                 let fullJoinedText = allTexts.join("\\n");
@@ -234,8 +227,12 @@ class CDPNativeClient:
         """
         try:
             res = self.send("Runtime.evaluate", {"expression": expr, "returnByValue": True})
-            # Manejar la estructura anidada de Chrome DevTools: res['result']['value']
-            val = res.get("result", {}).get("value")
+            # En CDP, la respuesta viene en res['result']['result']['value'] (o res['result']['value'])
+            result_obj = res.get("result", {})
+            val = result_obj.get("value")
+            if val is None and isinstance(result_obj.get("result"), dict):
+                val = result_obj["result"].get("value")
+
             if isinstance(val, dict):
                 return val
             if isinstance(val, str):
@@ -243,6 +240,7 @@ class CDPNativeClient:
                     return json.loads(val)
                 except Exception:
                     pass
+
             return {
                 "tickets": [],
                 "totalQueueText": "0 tickets",
@@ -259,7 +257,7 @@ class CDPNativeClient:
     def open_ticket_by_number(self, ticket_number: str) -> bool:
         """
         Ubica la celda o enlace correspondiente al ticket en la columna Number
-        (incluso dentro de Shadow DOM o iframes de ServiceNow) y hace clic en él.
+        (incluso dentro de Shadow DOM o iframes como gsft_main) y hace clic para abrirlo.
         """
         num_clean = ticket_number.strip().upper()
         expr = f"""
@@ -291,19 +289,32 @@ class CDPNativeClient:
             collectShadowRoots(document.body || document.documentElement);
 
             for (let root of allRoots) {{
-                let candidates = Array.from(root.querySelectorAll("a, td, span, tr, [role='gridcell'], div"));
+                // Buscar enlaces o celdas con el texto del ticket
+                let candidates = Array.from(root.querySelectorAll("a, td[data-field='number'], span, tr, [role='gridcell'], div"));
                 for (let el of candidates) {{
                     let txt = (el.innerText || el.textContent || "").trim().toUpperCase();
                     let href = el.getAttribute ? (el.getAttribute("href") || "") : "";
+                    
                     if (txt === targetNum || txt.includes(targetNum) || href.includes(targetNum)) {{
+                        // Priorizar el enlace <a> si está adentro o es él mismo
                         let clickable = (el.tagName && el.tagName.toLowerCase() === 'a') ? el : (el.querySelector("a") || el);
-                        if (clickable && clickable.scrollIntoView) {{
+                        
+                        if (clickable.scrollIntoView) {{
                             clickable.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
                         }}
-                        if (clickable && clickable.click) {{
+                        
+                        // Disparar evento de click nativo
+                        let clickEvent = new MouseEvent('click', {{
+                            view: window,
+                            bubbles: true,
+                            cancelable: true
+                        }});
+                        clickable.dispatchEvent(clickEvent);
+                        
+                        if (clickable.click) {{
                             clickable.click();
-                            return true;
                         }}
+                        return true;
                     }}
                 }}
             }}
@@ -312,7 +323,12 @@ class CDPNativeClient:
         """
         try:
             res = self.send("Runtime.evaluate", {"expression": expr, "returnByValue": True})
-            if "result" in res and res["result"].get("value") is True:
+            result_obj = res.get("result", {})
+            val = result_obj.get("value")
+            if val is None and isinstance(result_obj.get("result"), dict):
+                val = result_obj["result"].get("value")
+
+            if val is True:
                 return True
         except Exception as e:
             print(f"[CDP Native] Error al abrir ticket {ticket_number}: {e}")
