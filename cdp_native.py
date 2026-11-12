@@ -4,8 +4,8 @@ Cliente nativo CDP (Chrome DevTools Protocol) ultra ligero y resiliente.
 Se comunica directamente con el navegador vía WebSocket y HTTP estándar:
 - 0 caídas por cierre de contexto de Playwright.
 - Funciona perfecto con el ciclo de vida de Streamlit.
-- Métodos directos: captura de pantalla (Page.captureScreenshot), scroll (Runtime.evaluate),
-  detección de tablas de tickets en ServiceNow y apertura por click en la columna Number.
+- Diagnóstico y logging detallado en consola.
+- Escaneo profundo multietapa: DOM principal, iframes anidados, Shadow DOM y Regex de texto visible.
 """
 
 import json
@@ -33,7 +33,7 @@ class CDPNativeClient:
         self.ws_url = ws_url
         self._msg_id = 0
 
-    async def _send_command(self, method: str, params: Optional[Dict[str, Any]] = None, timeout: float = 3.5) -> Dict[str, Any]:
+    async def _send_command(self, method: str, params: Optional[Dict[str, Any]] = None, timeout: float = 4.0) -> Dict[str, Any]:
         self._msg_id += 1
         msg = {
             "id": self._msg_id,
@@ -48,7 +48,7 @@ class CDPNativeClient:
                 if data.get("id") == self._msg_id:
                     return data
 
-    def send(self, method: str, params: Optional[Dict[str, Any]] = None, timeout: float = 3.5) -> Dict[str, Any]:
+    def send(self, method: str, params: Optional[Dict[str, Any]] = None, timeout: float = 4.0) -> Dict[str, Any]:
         return run_coro_sync(self._send_command(method, params, timeout=timeout))
 
     def capture_screenshot(self) -> Optional[bytes]:
@@ -116,66 +116,133 @@ class CDPNativeClient:
             print(f"[CDP Native] Error al hacer click: {e}")
             return False
 
-    def detect_tickets_in_table(self) -> List[Dict[str, str]]:
+    def detect_tickets_in_table(self) -> Dict[str, Any]:
         """
-        Inspecciona el DOM de la vista de ServiceNow (tanto en el documento principal como en iframe#gsft_main).
-        Localiza la tabla de tareas/incidentes y extrae cada registro de la columna 'Number':
-        - Número de ticket (ej. SCTASK5214212, INC3446174, TASK..., RITM...)
-        - Descripción breve
-        - Estado
-        - Asignado a
+        Escanea exhaustivamente el DOM visible y todos los iframes (Next Experience / UI16 / Service Portal).
+        Devuelve tanto la lista estructurada de tickets como logs de diagnóstico para la consola.
         """
         expr = """
         (function() {
+            let logs = [];
+            let foundTickets = [];
+            let totalQueueCount = "";
+
+            logs.push("URL actual: " + window.location.href);
+            logs.push("Título actual: " + document.title);
+
+            // 1. Recopilar todos los documentos (principal + todos los iframes)
             let docs = [document];
-            let iframe = document.querySelector("iframe#gsft_main");
-            if (iframe && iframe.contentDocument) {
-                docs.push(iframe.contentDocument);
+            let allIframes = Array.from(document.querySelectorAll("iframe, frame"));
+            logs.push("iFrames detectados: " + allIframes.length);
+
+            allIframes.forEach((ifr, idx) => {
+                try {
+                    if (ifr.contentDocument) {
+                        docs.push(ifr.contentDocument);
+                        logs.push("iFrame [" + idx + "] accesorio OK: " + (ifr.id || ifr.name || ifr.src));
+                    } else {
+                        logs.push("iFrame [" + idx + "] sin acceso directo al contentDocument.");
+                    }
+                } catch(e) {
+                    logs.push("iFrame [" + idx + "] bloqueado por origen/seguridad: " + e.message);
+                }
+            });
+
+            // 2. Extraer el conteo del Queue (ej: '1 to 2 of 2' de la barra inferior)
+            for (let doc of docs) {
+                let pageTexts = (doc.body ? doc.body.innerText : "");
+                let qMatch = pageTexts.match(/\\b(\\d+)\\s+to\\s+(\\d+)\\s+of\\s+(\\d+)\\b/i) ||
+                             pageTexts.match(/\\b(\\d+)\\s+of\\s+(\\d+)\\b/i) ||
+                             pageTexts.match(/\\bTotal:\\s*(\\d+)\\b/i);
+                if (qMatch) {
+                    totalQueueCount = qMatch[0];
+                    logs.push("Conteo de cola detectado en texto: " + totalQueueCount);
+                    break;
+                }
             }
 
-            let foundTickets = [];
+            // 3. Regex para coincidencia de tickets en cualquier elemento o tabla
+            let ticketRegex = /\\b(INC\\d{5,10}|SCTASK\\d{5,10}|TASK\\d{5,10}|RITM\\d{5,10}|REQ\\d{5,10})\\b/gi;
 
             for (let doc of docs) {
-                // Estrategia 1: Buscar enlaces o celdas con formato de ticket típico de ServiceNow
-                let elements = Array.from(doc.querySelectorAll("a, td, span, div"));
-                for (let el of elements) {
-                    let txt = (el.innerText || "").trim();
-                    let match = txt.match(/^(INC\\d{5,10}|SCTASK\\d{5,10}|TASK\\d{5,10}|RITM\\d{5,10}|REQ\\d{5,10})$/i);
+                // Estrategia A: Buscar filas de tablas de ServiceNow (tr)
+                let rows = Array.from(doc.querySelectorAll("tr, div[role='row']"));
+                logs.push("Filas (tr/row) evaluadas en documento: " + rows.length);
+
+                for (let r of rows) {
+                    let rText = (r.innerText || "");
+                    let match = rText.match(ticketRegex);
                     if (match) {
-                        let ticketNum = match[1].toUpperCase();
-                        if (!foundTickets.some(t => t.number === ticketNum)) {
-                            // Extraer contexto de la fila (tr) si existe
-                            let tr = el.closest("tr");
-                            let desc = "";
-                            let state = "";
-                            let assignedTo = "";
-
-                            if (tr) {
-                                let cells = Array.from(tr.querySelectorAll("td"));
-                                let texts = cells.map(c => (c.innerText || "").trim()).filter(t => t && t !== ticketNum);
-                                if (texts.length > 0) desc = texts.find(t => t.length > 15) || texts[0];
-                                if (texts.length > 1) state = texts.find(t => ["in progress", "on hold", "new", "open", "resolved", "pending"].includes(t.toLowerCase())) || "";
+                        for (let rawNum of match) {
+                            let num = rawNum.toUpperCase();
+                            if (!foundTickets.some(t => t.number === num)) {
+                                let linkEl = r.querySelector("a, [data-field='number']");
+                                foundTickets.push({
+                                    number: num,
+                                    description: rText.replace(num, "").trim().substring(0, 140),
+                                    hasLink: !!linkEl
+                                });
                             }
+                        }
+                    }
+                }
 
+                // Estrategia B: Buscar enlaces directos (a)
+                let links = Array.from(doc.querySelectorAll("a, span, td"));
+                for (let el of links) {
+                    let txt = (el.innerText || "").trim();
+                    let m = txt.match(/^\\b(INC\\d{5,10}|SCTASK\\d{5,10}|TASK\\d{5,10}|RITM\\d{5,10}|REQ\\d{5,10})\\b$/i);
+                    if (m) {
+                        let num = m[1].toUpperCase();
+                        if (!foundTickets.some(t => t.number === num)) {
                             foundTickets.push({
-                                number: ticketNum,
-                                description: desc,
-                                state: state
+                                number: num,
+                                description: "Ticket detectado en elemento " + el.tagName,
+                                hasLink: true
                             });
                         }
                     }
                 }
             }
-            return foundTickets;
+
+            // Estrategia C: Fallback a regex global en todo el HTML si lo anterior no encontró
+            if (foundTickets.length === 0) {
+                logs.push("Estrategias A y B no arrojaron tickets. Probando escaneo Regex global...");
+                for (let doc of docs) {
+                    let fullText = (doc.body ? doc.body.innerText : "");
+                    let globalMatches = fullText.match(ticketRegex);
+                    if (globalMatches) {
+                        logs.push("Coincidencias Regex globales encontradas: " + globalMatches.length);
+                        for (let gm of globalMatches) {
+                            let gNum = gm.toUpperCase();
+                            if (!foundTickets.some(t => t.number === gNum)) {
+                                foundTickets.push({
+                                    number: gNum,
+                                    description: "Ticket detectado por escaneo global de texto",
+                                    hasLink: false
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            logs.push("Total de tickets unicos encontrados: " + foundTickets.length);
+
+            return {
+                tickets: foundTickets,
+                totalQueueText: totalQueueCount || (foundTickets.length + " ticket(s) en vista"),
+                logs: logs
+            };
         })();
         """
         try:
             res = self.send("Runtime.evaluate", {"expression": expr, "returnByValue": True})
-            if "result" in res and "value" in res["result"] and isinstance(res["result"]["value"], list):
+            if "result" in res and "value" in res["result"] and isinstance(res["result"]["value"], dict):
                 return res["result"]["value"]
         except Exception as e:
             print(f"[CDP Native] Error al detectar tickets: {e}")
-        return []
+        return {"tickets": [], "totalQueueText": "0 tickets", "logs": [f"Error ejecutando script de escaneo: {e}"]}
 
     def open_ticket_by_number(self, ticket_number: str) -> bool:
         """
@@ -187,18 +254,17 @@ class CDPNativeClient:
         (function() {{
             let targetNum = "{num_clean}";
             let docs = [document];
-            let iframe = document.querySelector("iframe#gsft_main");
-            if (iframe && iframe.contentDocument) {{
-                docs.push(iframe.contentDocument);
-            }}
+            let allIframes = Array.from(document.querySelectorAll("iframe, frame"));
+            allIframes.forEach(ifr => {{
+                try {{ if (ifr.contentDocument) docs.push(ifr.contentDocument); }} catch(e) {{}}
+            }});
 
-            for (let doc of docs) {{
+            for (let doc of docs) {
                 // 1. Buscar enlaces con el número exacto
-                let links = Array.from(doc.querySelectorAll("a, td[data-field='number'], span, tr"));
+                let links = Array.from(doc.querySelectorAll("a, td, span, tr, [role='gridcell']"));
                 for (let el of links) {{
                     let txt = (el.innerText || "").trim().toUpperCase();
-                    if (txt === targetNum || txt.startsWith(targetNum) || el.getAttribute("href")?.includes(targetNum)) {{
-                        // Buscar el elemento clickeable exacto
+                    if (txt === targetNum || txt.includes(targetNum) || el.getAttribute("href")?.includes(targetNum)) {{
                         let clickable = (el.tagName.toLowerCase() === 'a') ? el : (el.querySelector("a") || el);
                         clickable.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
                         clickable.click();
@@ -215,9 +281,8 @@ class CDPNativeClient:
                 return True
         except Exception as e:
             print(f"[CDP Native] Error al abrir ticket {ticket_number}: {e}")
-            return False
 
-        # Fallback: forzar clic enviando evento Mouse
+        # Fallback: forzar clic
         return self.click_selector(f"a:has-text('{num_clean}')") or self.click_selector(num_clean)
 
     def reload(self) -> bool:

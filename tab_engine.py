@@ -1,7 +1,7 @@
 """
 tab_engine.py
 Motor híbrido de descubrimiento y control de pestañas vía Chrome DevTools Protocol (CDP).
-Arquitectura ultra resiliente con detección y apertura de tickets de ServiceNow.
+Arquitectura ultra resiliente con detección, logging y apertura automática de tickets.
 """
 
 import json
@@ -115,25 +115,54 @@ class CDPBrowserController:
             except Exception:
                 pass
 
-        client = self._get_active_native_client()
+        self._get_active_native_client()
         self.take_screenshot()
         return True
 
-    def get_detected_tickets(self) -> List[Dict[str, str]]:
-        """Busca registros de tickets en la tabla visible de ServiceNow."""
+    def scan_tickets_with_diagnostics(self) -> Dict[str, Any]:
+        """
+        Escanea la tabla de ServiceNow, genera logs detallados en la consola
+        y retorna la lista de tickets junto con el texto de la cola (Queue).
+        """
+        print("\n" + "="*50)
+        print("🔍 [INICIANDO ESCANEO DE TICKETS EN SERVICENOW]")
+        print("="*50)
+
         client = self._get_active_native_client()
         if not client:
-            return []
-        return client.detect_tickets_in_table()
+            print("[ERROR] No hay cliente CDP nativo conectado para la pestaña actual.")
+            return {
+                "tickets": [],
+                "totalQueueText": "Error: Navegador desconectado",
+                "logs": ["No hay conexión CDP activa."]
+            }
+
+        diag = client.detect_tickets_in_table()
+        logs = diag.get("logs", [])
+        tickets = diag.get("tickets", [])
+        queue_text = diag.get("totalQueueText", "")
+
+        for line in logs:
+            print(f"  [DOM Log] {line}")
+
+        print(f"\n📊 [RESULTADO] Tickets encontrados: {len(tickets)} | Estado de la cola: {queue_text}")
+        for idx, t in enumerate(tickets, 1):
+            print(f"   {idx}. {t.get('number')} -> {t.get('description', '')[:60]}")
+        print("="*50 + "\n")
+
+        return diag
 
     def open_ticket(self, ticket_number: str) -> bool:
         """Ubica el ticket en la columna Number y hace clic para abrirlo."""
+        print(f"🎯 [ACCIÓN] Solicitando abrir ticket {ticket_number}...")
         client = self._get_active_native_client()
         if not client:
+            print("[ERROR] Cliente no disponible.")
             return False
 
         success = client.open_ticket_by_number(ticket_number)
-        time.sleep(1.2)  # Tiempo para que ServiceNow comience a cargar el formulario
+        print(f"  ✓ Resultado del clic: {'Éxito' if success else 'Falló'}")
+        time.sleep(1.2)
         self.take_screenshot()
         return success
 
