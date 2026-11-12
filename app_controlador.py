@@ -493,7 +493,7 @@ with col_ctrl:
         df_saved = df_saved[field_columns]
 
         st.markdown(f"**📑 Tabla Completa de Formulario (18 Campos Extraídos) (`{len(df_saved)}`):**")
-        st.dataframe(df_saved, use_container_width=True)
+        st.dataframe(df_saved, use_container_width=True, height=380)
 
         # TABLA EXTRA SOLICITADA: Únicamente Número de Ticket y Descripción (estrictamente Description)
         st.markdown(f"**📋 Resumen Directo: Número de Ticket y Descripción (`{len(df_saved)}`):**")
@@ -511,7 +511,15 @@ with col_ctrl:
                 "Descripción": desc_val
             })
         df_summary = pd.DataFrame(summary_rows)
-        st.dataframe(df_summary, use_container_width=True)
+        st.dataframe(
+            df_summary,
+            use_container_width=True,
+            height=320,
+            column_config={
+                "Número de Ticket": st.column_config.TextColumn("Número de Ticket", width="small"),
+                "Descripción": st.column_config.TextColumn("Descripción", width="large")
+            }
+        )
 
         csv_bytes = df_saved.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -599,19 +607,27 @@ with col_ctrl:
         m_count = res.get("matches_count", 0)
         breakdown = res.get("queue_breakdown", {})
         top_q = res.get("top_queue", "")
+        target_tnum = res.get("ticket_number", "TICKET")
+        target_tdesc = res.get("ticket_desc", "Sin descripción registrada")
 
-        # Resumen principal requerido: Se encontraron X tickets extremadamente parecidos y se cerraron en estos Queues
+        # Resumen principal requerido con la descripción textual del ticket del Paso 3
         st.markdown(f"""
-        <div style="background:#eff6ff; border:2px solid #3b82f6; border-radius:10px; padding:16px 20px; margin:16px 0;">
-            <h4 style="margin:0; color:#1e40af; font-size:1.15rem;">🎯 Conclusión del Análisis Histórico</h4>
-            <p style="margin:8px 0 10px 0; font-size:1.02rem; color:#1e293b; font-weight:600;">
-                Se encontraron <span style="color:#2563eb; font-size:1.25rem;">{m_count}</span> tickets extremadamente parecidos a tu descripción y se cerraron en estos Queues:
+        <div style="background:#eff6ff; border:2px solid #3b82f6; border-radius:10px; padding:18px 22px; margin:16px 0;">
+            <h4 style="margin:0; color:#1e40af; font-size:1.22rem;">🎯 Conclusión del Análisis Histórico</h4>
+
+            <div style="background:#ffffff; border:1px solid #bfdbfe; border-radius:8px; padding:12px 16px; margin:12px 0;">
+                <span style="font-weight:700; color:#1e3a8a; font-size:0.95rem;">📝 Descripción Textual del Ticket Evaluado ({target_tnum}):</span>
+                <p style="margin:6px 0 0 0; color:#0f172a; font-size:0.92rem; white-space:pre-wrap; line-height:1.45;">{target_tdesc}</p>
+            </div>
+
+            <p style="margin:8px 0 10px 0; font-size:1.05rem; color:#1e293b; font-weight:700;">
+                Se encontraron <span style="color:#2563eb; font-size:1.3rem;">{m_count}</span> tickets extremadamente parecidos a tu descripción y se cerraron en estos Queues:
             </p>
-            <ul style="margin:0; padding-left:22px; color:#334155; font-size:0.95rem;">
+            <ul style="margin:0; padding-left:22px; color:#334155; font-size:0.98rem; line-height:1.5;">
                 {''.join(f'<li><b>{q}:</b> {cnt} ticket(s) ({round(cnt/m_count*100, 1) if m_count else 0}%)</li>' for q, cnt in breakdown.items())}
             </ul>
-            <div style="margin-top:12px; padding:8px 12px; background:#dbeafe; border-radius:6px; color:#1e40af; font-weight:700;">
-                👉 Queue Recomendado por Cierre Histórico: <span style="font-size:1.1rem; color:#1d4ed8;">{top_q}</span>
+            <div style="margin-top:14px; padding:10px 14px; background:#dbeafe; border-radius:6px; color:#1e40af; font-weight:700; font-size:1.05rem;">
+                👉 Queue Recomendado por Cierre Histórico: <span style="font-size:1.15rem; color:#1d4ed8;">{top_q}</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -627,7 +643,7 @@ with col_ctrl:
             </div>
             """, unsafe_allow_html=True)
 
-        # Tabla detallada de tickets similares
+        # Tabla detallada ampliada con altura generosa y columnas completas
         matches_list = res.get("detailed_matches", [])
         if matches_list:
             st.markdown(f"**Detalle de Tickets Históricos Más Parecidos (`{len(matches_list)}`):**")
@@ -636,7 +652,19 @@ with col_ctrl:
             valid_cols = [c for c in cols_to_show if c in df_matches.columns]
             df_matches_view = df_matches[valid_cols]
 
-            st.dataframe(df_matches_view, use_container_width=True)
+            # Tabla más grande con altura de 560px para evitar scroll excesivo
+            st.dataframe(
+                df_matches_view,
+                use_container_width=True,
+                height=560,
+                column_config={
+                    "Ticket Histórico": st.column_config.TextColumn("Ticket Histórico", width="small"),
+                    "Descripción Histórica": st.column_config.TextColumn("Descripción Histórica", width="large"),
+                    "Queue de Cierre": st.column_config.TextColumn("Queue de Cierre", width="medium"),
+                    "Similitud (%)": st.column_config.NumberColumn("Similitud (%)", format="%.1f%%"),
+                    "Estado / Cierre": st.column_config.TextColumn("Estado / Cierre", width="small")
+                }
+            )
 
             csv_matches = df_matches_view.to_csv(index=False).encode("utf-8")
             st.download_button(

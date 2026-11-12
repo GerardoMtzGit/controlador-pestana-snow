@@ -308,15 +308,13 @@ class HistoricalCSVAnalyzer:
 
             row = self.df_historical.iloc[idx]
             t_num = str(row[self.num_col]) if self.num_col and pd.notna(row[self.num_col]) else f"HIST-{idx+1}"
-            raw_desc = str(row[self.desc_col]) if pd.notna(row[self.desc_col]) else ""
-            queue_val = str(row[self.queue_col]) if self.queue_col and pd.notna(row[self.queue_col]) else "Sin Cola Especificada"
-            state_val = str(row[self.state_col]) if self.state_col and pd.notna(row[self.state_col]) else "Cerrado / Resuelto"
-
-            shortened_desc = raw_desc if len(raw_desc) <= 150 else raw_desc[:147] + "..."
+            raw_desc = str(row[self.desc_col]).strip() if pd.notna(row[self.desc_col]) else ""
+            queue_val = str(row[self.queue_col]).strip() if self.queue_col and pd.notna(row[self.queue_col]) else "Sin Cola Especificada"
+            state_val = str(row[self.state_col]).strip() if self.state_col and pd.notna(row[self.state_col]) else "Cerrado / Resuelto"
 
             matches.append({
                 "Ticket Histórico": t_num,
-                "Descripción Histórica": shortened_desc,
+                "Descripción Histórica": raw_desc,
                 "Queue de Cierre": queue_val,
                 "Similitud (%)": round(float(sim_score) * 100, 1),
                 "Estado / Cierre": state_val,
@@ -329,12 +327,12 @@ class HistoricalCSVAnalyzer:
             for idx, sim_score in indexed_scores[:3]:
                 row = self.df_historical.iloc[idx]
                 t_num = str(row[self.num_col]) if self.num_col and pd.notna(row[self.num_col]) else f"HIST-{idx+1}"
-                raw_desc = str(row[self.desc_col]) if pd.notna(row[self.desc_col]) else ""
-                queue_val = str(row[self.queue_col]) if self.queue_col and pd.notna(row[self.queue_col]) else "Sin Cola Especificada"
-                state_val = str(row[self.state_col]) if self.state_col and pd.notna(row[self.state_col]) else "Cerrado"
+                raw_desc = str(row[self.desc_col]).strip() if pd.notna(row[self.desc_col]) else ""
+                queue_val = str(row[self.queue_col]).strip() if self.queue_col and pd.notna(row[self.queue_col]) else "Sin Cola Especificada"
+                state_val = str(row[self.state_col]).strip() if self.state_col and pd.notna(row[self.state_col]) else "Cerrado"
                 matches.append({
                     "Ticket Histórico": t_num,
-                    "Descripción Histórica": raw_desc[:147] + "..." if len(raw_desc) > 150 else raw_desc,
+                    "Descripción Histórica": raw_desc,
                     "Queue de Cierre": queue_val,
                     "Similitud (%)": round(float(sim_score) * 100, 1),
                     "Estado / Cierre": state_val,
