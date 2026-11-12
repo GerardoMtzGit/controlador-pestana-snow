@@ -417,39 +417,68 @@ with col_ctrl:
 
     # ================= FEATURE: PASO 3 - GUARDAR CAMPOS DEL TICKET EN TABLA =================
     st.markdown("### 📋 Paso 3: Guardar Campos del Ticket en Tabla")
-    st.caption("Extracción y registro de los 16 campos clave del formulario abierto en ServiceNow.")
+    st.caption("Extracción y registro de los campos del formulario principal y de la pestaña **User Submitted Fields**.")
 
-    col_p3_1, col_p3_2 = st.columns([1, 1])
+    col_p3_1, col_p3_2, col_p3_3 = st.columns([1, 1.4, 0.8])
     with col_p3_1:
-        if st.button("📥 Extraer Campos del Ticket Abierto", type="secondary", use_container_width=True):
+        if st.button("📥 Extraer Campos Generales", type="secondary", use_container_width=True):
             with st.spinner("Extrayendo campos del formulario de ServiceNow..."):
                 data = controller.extract_ticket_form_data()
                 if data:
-                    st.session_state.extracted_ticket_data = data
                     t_num = data.get("Number", "").strip()
+                    existing_entry = next((r for r in st.session_state.saved_tickets_list if r.get("Number") == t_num), {})
+                    merged = {**existing_entry, **data}
+                    st.session_state.extracted_ticket_data = merged
+
                     if t_num:
                         idx_found = next((i for i, r in enumerate(st.session_state.saved_tickets_list) if r.get("Number") == t_num), None)
                         if idx_found is not None:
-                            st.session_state.saved_tickets_list[idx_found] = data
+                            st.session_state.saved_tickets_list[idx_found] = merged
                         else:
-                            st.session_state.saved_tickets_list.append(data)
-                    st.session_state.last_action_msg = f"Campos extraídos para {t_num or 'ticket actual'}"
+                            st.session_state.saved_tickets_list.append(merged)
+                    st.session_state.last_action_msg = f"Campos generales extraídos para {t_num or 'ticket actual'}"
                     st.session_state.last_frame = controller.take_screenshot()
                     st.rerun()
 
     with col_p3_2:
-        if st.button("🗑️ Limpiar Tabla Guardada", use_container_width=True):
+        if st.button("📂 Abrir Tab 'User Submitted Fields' y Extraer", type="primary", use_container_width=True):
+            with st.spinner("Cambiando a pestaña 'User Submitted Fields' en ServiceNow..."):
+                user_fields = controller.open_and_extract_user_submitted_fields()
+
+                # Obtener ticket activo
+                curr_ticket = st.session_state.extracted_ticket_data.get("Number", "")
+                if not curr_ticket and st.session_state.saved_tickets_list:
+                    curr_ticket = st.session_state.saved_tickets_list[-1].get("Number", "")
+
+                # Mezclar datos en la sesión y en la tabla guardada
+                st.session_state.extracted_ticket_data.update(user_fields)
+                if curr_ticket:
+                    idx_found = next((i for i, r in enumerate(st.session_state.saved_tickets_list) if r.get("Number") == curr_ticket), None)
+                    if idx_found is not None:
+                        st.session_state.saved_tickets_list[idx_found].update(user_fields)
+                    else:
+                        entry = {"Number": curr_ticket, **user_fields}
+                        st.session_state.saved_tickets_list.append(entry)
+
+                st.session_state.last_action_msg = "Pestaña 'User Submitted Fields' abierta y campos extraídos"
+                st.session_state.last_frame = controller.take_screenshot()
+                st.success("¡Pestaña 'User Submitted Fields' abierta y campos extraídos con éxito!")
+                time.sleep(0.3)
+                st.rerun()
+
+    with col_p3_3:
+        if st.button("🗑️ Limpiar Tabla", use_container_width=True):
             st.session_state.saved_tickets_list = []
             st.session_state.extracted_ticket_data = {}
             st.session_state.last_action_msg = "Tabla de tickets limpiada"
             st.rerun()
 
-    # Visualización de la Tabla Guardada con las 16 columnas requeridas
+    # Visualización de la Tabla Guardada con todas las columnas requeridas
     field_columns = [
-        "Number", "State", "Affected user", "Channel", "Reported by",
+        "Number", "State", "Affected user", "User email used to login", "Channel", "Reported by",
         "Impact", "Category", "Urgency", "Subcategory", "Priority",
         "Service", "Assignment group", "Configuration Item", "Assigned to",
-        "Short description", "Description"
+        "Short description", "Description", "More Information (Issue Description)"
     ]
 
     if st.session_state.saved_tickets_list:
@@ -471,7 +500,7 @@ with col_ctrl:
             use_container_width=True
         )
     else:
-        st.info("💡 Abre un ticket en el Paso 2 o presiona **'📥 Extraer Campos del Ticket Abierto'** para registrar los 16 campos en la tabla.")
+        st.info("💡 Abre un ticket en el Paso 2 o presiona **'📥 Extraer Campos Generales'** y **'📂 Abrir Tab User Submitted Fields'** para registrar todos los campos en la tabla.")
 
     st.caption(f"Última acción: **{st.session_state.last_action_msg}**")
 

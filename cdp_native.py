@@ -647,3 +647,221 @@ class CDPNativeClient:
             "Service": "", "Assignment group": "", "Configuration Item": "", "Assigned to": "",
             "Short description": "", "Description": ""
         }
+
+    def switch_form_tab(self, tab_name: str = "User Submitted Fields") -> bool:
+        """
+        Localiza y hace clic en una pestaña inferior del formulario de ServiceNow
+        (ej: 'User Submitted Fields', 'Notes', 'Related Records', 'Other Information', etc.)
+        """
+        tab_clean = tab_name.replace('"', '\\"').replace("'", "\\'")
+        js_code = """
+        (function() {
+            let targetTab = "TARGET_TAB_PLACEHOLDER".toLowerCase();
+            let allRoots = [];
+            function scanNode(node) {
+                if (!node) return;
+                allRoots.push(node);
+                if (node.shadowRoot) scanNode(node.shadowRoot);
+                let children = node.children || [];
+                for (let i = 0; i < children.length; i++) {
+                    let child = children[i];
+                    if (child.tagName && child.tagName.toLowerCase() === 'iframe') {
+                        try {
+                            if (child.contentDocument) scanNode(child.contentDocument);
+                        } catch(e) {}
+                    }
+                    scanNode(child);
+                }
+            }
+            scanNode(document.body || document.documentElement);
+
+            for (let root of allRoots) {
+                let candidates = Array.from(root.querySelectorAll(
+                    "[role='tab'], .tab_caption_text, .tabs2_tab, span.tab_header, div.tab_header, button, a, span, [data-tab-name], [data-section-name]"
+                ));
+
+                for (let el of candidates) {
+                    let txt = (el.innerText || el.textContent || "").trim().toLowerCase();
+                    let dataTab = (el.getAttribute("data-tab-name") || el.getAttribute("data-section-name") || "").toLowerCase();
+
+                    if (txt === targetTab || txt.includes(targetTab) || (dataTab && dataTab.includes(targetTab.replace(/\\s+/g, '_')))) {
+                        let clickable = el;
+                        let tabParent = el.closest("[role='tab'], .tabs2_tab, .tab_header, button, a");
+                        if (tabParent) clickable = tabParent;
+
+                        if (clickable.scrollIntoView) {
+                            clickable.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }
+
+                        clickable.focus && clickable.focus();
+                        clickable.click();
+
+                        try {
+                            clickable.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                            clickable.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                            clickable.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        } catch(e) {}
+
+                        return true;
+                    }
+                }
+            }
+            return false;
+        })();
+        """.replace("TARGET_TAB_PLACEHOLDER", tab_clean)
+
+        try:
+            res = self.send("Runtime.evaluate", {"expression": js_code, "returnByValue": True})
+            result_obj = res.get("result", {})
+            val = result_obj.get("value")
+            if val is True:
+                print(f"[CDP Native] Pestaña '{tab_name}' activada con éxito.")
+                return True
+        except Exception as e:
+            print(f"[CDP Native] Error al cambiar a pestaña '{tab_name}': {e}")
+        return False
+
+    def extract_user_submitted_fields(self) -> Dict[str, str]:
+        """
+        Extrae los campos dentro de la pestaña 'User Submitted Fields':
+        - 'More Information, Please Provide a Detailed description of the issue. If no less Than Fifty Words'
+        - 'User email used to login'
+        """
+        js_code = """
+        (function() {
+            let res = {
+                "More Information (Issue Description)": "",
+                "User email used to login": ""
+            };
+
+            let allRoots = [];
+            function scanNode(node) {
+                if (!node) return;
+                allRoots.push(node);
+                if (node.shadowRoot) scanNode(node.shadowRoot);
+                let children = node.children || [];
+                for (let i = 0; i < children.length; i++) {
+                    let child = children[i];
+                    if (child.tagName && child.tagName.toLowerCase() === 'iframe') {
+                        try {
+                            if (child.contentDocument) scanNode(child.contentDocument);
+                        } catch(e) {}
+                    }
+                    scanNode(child);
+                }
+            }
+            scanNode(document.body || document.documentElement);
+
+            function getElementVal(el) {
+                if (!el) return "";
+                let tag = el.tagName ? el.tagName.toLowerCase() : "";
+                if (tag === 'select') {
+                    let opt = el.options && el.selectedIndex >= 0 ? el.options[el.selectedIndex] : null;
+                    return opt ? (opt.text || opt.value || "").trim() : "";
+                }
+                if (tag === 'textarea' || tag === 'input') {
+                    return (el.value || "").trim();
+                }
+                return (el.innerText || el.textContent || "").trim();
+            }
+
+            // Expresiones regulares para los dos campos requeridos
+            let moreInfoRegex = /(more\\s*information|please\\s*provide\\s*a\\s*.*description|no\\s*less\\s*than\\s*(fifty|50)\\s*words|detailed\\s*description)/i;
+            let userEmailRegex = /(user\\s*email|email\\s*used\\s*to\\s*login|used\\s*to\\s*login|email.*login)/i;
+
+            for (let root of allRoots) {
+                let elements = Array.from(root.querySelectorAll("label, span.label-text, th, td, div.form-group, div.form-field, div, span, tr"));
+
+                for (let el of elements) {
+                    let txt = (el.innerText || el.textContent || "").trim();
+
+                    // Campo 1: More Information
+                    if (!res["More Information (Issue Description)"] && moreInfoRegex.test(txt)) {
+                        let forId = el.getAttribute ? el.getAttribute("for") : null;
+                        if (forId) {
+                            let target = root.querySelector("[id='" + forId + "']");
+                            let v = getElementVal(target);
+                            if (v && v !== txt) res["More Information (Issue Description)"] = v;
+                        }
+                        if (!res["More Information (Issue Description)"]) {
+                            let container = el.closest(".form-group, .form-field, tr, div.row, div");
+                            if (container) {
+                                let inp = container.querySelector("textarea, input:not([type='hidden']), span.form-control-static, p.form-control-static");
+                                let v = getElementVal(inp);
+                                if (v && v !== txt) res["More Information (Issue Description)"] = v;
+                            }
+                        }
+                        if (!res["More Information (Issue Description)"]) {
+                            let nextEl = el.nextElementSibling;
+                            if (nextEl) {
+                                let inp = nextEl.querySelector("textarea, input") || nextEl;
+                                let v = getElementVal(inp);
+                                if (v && v !== txt) res["More Information (Issue Description)"] = v;
+                            }
+                        }
+                    }
+
+                    // Campo 2: User email used to login
+                    if (!res["User email used to login"] && userEmailRegex.test(txt)) {
+                        let forId = el.getAttribute ? el.getAttribute("for") : null;
+                        if (forId) {
+                            let disp = root.querySelector("[id='sys_display." + forId + "']");
+                            if (disp && disp.value) res["User email used to login"] = disp.value.trim();
+                            let target = root.querySelector("[id='" + forId + "']");
+                            let v = getElementVal(target);
+                            if (v && v !== txt) res["User email used to login"] = v;
+                        }
+                        if (!res["User email used to login"]) {
+                            let container = el.closest(".form-group, .form-field, tr, div.row, div");
+                            if (container) {
+                                let disp = container.querySelector("input[id*='sys_display.']");
+                                if (disp && disp.value) res["User email used to login"] = disp.value.trim();
+                                let inp = container.querySelector("input:not([type='hidden']), span.form-control-static");
+                                let v = getElementVal(inp);
+                                if (v && v !== txt) res["User email used to login"] = v;
+                            }
+                        }
+                        if (!res["User email used to login"]) {
+                            let nextEl = el.nextElementSibling;
+                            if (nextEl) {
+                                let inp = nextEl.querySelector("input") || nextEl;
+                                let v = getElementVal(inp);
+                                if (v && v !== txt) res["User email used to login"] = v;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fallback de email por regex si se encuentra en algún campo de texto
+            if (!res["User email used to login"]) {
+                for (let root of allRoots) {
+                    let inputs = Array.from(root.querySelectorAll("input[type='text'], input[type='email'], span.form-control-static"));
+                    for (let inp of inputs) {
+                        let val = getElementVal(inp);
+                        if (val && /^[\\w\\.-]+@[\\w\\.-]+\\.[a-zA-Z]{{2,}}$/.test(val)) {{
+                            res["User email used to login"] = val;
+                            break;
+                        }}
+                    }
+                    if (res["User email used to login"]) break;
+                }
+            }
+
+            return res;
+        })();
+        """
+        try:
+            res = self.send("Runtime.evaluate", {"expression": js_code, "returnByValue": True})
+            result_obj = res.get("result", {})
+            val = result_obj.get("value")
+            if val is None and isinstance(result_obj.get("result"), dict):
+                val = result_obj["result"].get("value")
+
+            if isinstance(val, dict):
+                print(f"[CDP Native] User Submitted Fields extraídos: Email={val.get('User email used to login')} | Info={val.get('More Information (Issue Description)')[:40] if val.get('More Information (Issue Description)') else ''}")
+                return val
+        except Exception as e:
+            print(f"[CDP Native] Error al extraer User Submitted Fields: {e}")
+
+        return {"More Information (Issue Description)": "", "User email used to login": ""}

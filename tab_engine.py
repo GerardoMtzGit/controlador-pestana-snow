@@ -158,6 +158,36 @@ class CDPBrowserController:
         data = client.extract_ticket_form_data()
         return data
 
+    def switch_form_tab(self, tab_name: str = "User Submitted Fields") -> bool:
+        """Cambia a la pestaña de formulario indicada en ServiceNow."""
+        print(f"\n📂 [PESTAÑA FORMULARIO] Cambiando a: '{tab_name}'...")
+        client = self._get_active_native_client()
+        if not client:
+            return False
+        success = client.switch_form_tab(tab_name)
+        time.sleep(1.5)
+        self.take_screenshot()
+        return success
+
+    def extract_user_submitted_fields(self) -> Dict[str, str]:
+        """Extrae los campos de la pestaña 'User Submitted Fields'."""
+        client = self._get_active_native_client()
+        if not client:
+            return {"More Information (Issue Description)": "", "User email used to login": ""}
+        return client.extract_user_submitted_fields()
+
+    def open_and_extract_user_submitted_fields(self) -> Dict[str, str]:
+        """Abre la pestaña 'User Submitted Fields', espera su renderizado y extrae los campos requeridos."""
+        print("\n📂 [PASO 3: USER SUBMITTED FIELDS] Abriendo pestaña y extrayendo...")
+        client = self._get_active_native_client()
+        if not client:
+            return {"More Information (Issue Description)": "", "User email used to login": ""}
+        client.switch_form_tab("User Submitted Fields")
+        time.sleep(2.0)
+        data = client.extract_user_submitted_fields()
+        self.take_screenshot()
+        return data
+
     def go_back_to_list(self) -> bool:
         """Regresa a la vista anterior (lista de tickets)."""
         print("\n🔙 [ACCIÓN] Regresando a la vista anterior...")
