@@ -2,10 +2,10 @@
 app_controlador.py
 Interfaz interactiva y clara para seleccionar y controlar pestañas de ServiceNow.
 Incluye:
-- Persistencia estricta de la pestaña seleccionada en st.session_state (la vista espejo NUNCA desaparece).
-- Opción de refresco automático o manual de la vista espejo.
-- Controles de movimiento: Scroll Arriba / Abajo, Clics en Notas y Guardado.
-- Detección visual y botón directo '⚡ Seleccionar pestaña de ServiceNow'.
+- Conexión CDP nativa ultra estable (sin caídas de Playwright).
+- Botones compatibles con nuevas versiones de Streamlit (width='stretch').
+- Detección visual y botón directo '⚡ Conectar a esta pestaña de ServiceNow'.
+- Scroll fluido y vista previa en tiempo real.
 """
 
 import os
@@ -73,12 +73,6 @@ st.markdown("""
         padding: 10px;
         border-radius: 8px;
         margin-bottom: 10px;
-    }
-    .mirror-box {
-        border: 2px solid #009530;
-        border-radius: 8px;
-        padding: 6px;
-        background: #020617;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -189,7 +183,6 @@ col_ctrl, col_view = st.columns([1, 1], gap="medium")
 with col_ctrl:
     st.subheader("🎮 Controles para Mover la Pestaña")
 
-    # Mostrar pestaña activa vinculada
     if st.session_state.selected_tab_id:
         st.markdown(f"**Pestaña Activa:** `{st.session_state.selected_tab_title or st.session_state.selected_tab_id}`")
     else:
@@ -227,14 +220,14 @@ with col_ctrl:
         if st.button("📝 Ir a Pestaña Notes", use_container_width=True):
             done = controller.click_element("[data-tab-name*='notes']") or \
                    controller.click_element("button:has-text('Notes')") or \
-                   controller.click_element("span.tab_caption_text:has-text('Notes')")
+                   controller.click_element("Notes")
             st.session_state.last_action_msg = "Clic en Notes" if done else "Selector de Notes no encontrado"
             st.rerun()
     with sn2:
         if st.button("💾 Guardar / Update", use_container_width=True):
             done = controller.click_element("button#sysverb_update") or \
                    controller.click_element("button:has-text('Update')") or \
-                   controller.click_element("button:has-text('Save')")
+                   controller.click_element("Update")
             st.session_state.last_action_msg = "Clic en Guardar/Update" if done else "Botón Update no encontrado"
             st.rerun()
 
@@ -275,7 +268,6 @@ with col_ctrl:
 with col_view:
     st.subheader("📺 Vista Previa de la Pestaña")
 
-    # Si hay pestaña enlazada en la sesión, asegurar que el controlador la tenga asignada
     if st.session_state.selected_tab_id and controller.current_tab_id != st.session_state.selected_tab_id:
         controller.current_tab_id = st.session_state.selected_tab_id
 
@@ -283,7 +275,6 @@ with col_view:
     if screenshot_bytes:
         st.session_state.last_frame = screenshot_bytes
 
-    # Mostrar el frame actual o el último conocido en caché (nunca pantalla en blanco)
     frame_to_show = screenshot_bytes or st.session_state.last_frame
 
     if frame_to_show:
