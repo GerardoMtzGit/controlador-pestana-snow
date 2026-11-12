@@ -5,7 +5,8 @@ Se comunica directamente con el navegador vía WebSocket y HTTP estándar:
 - 0 caídas por cierre de contexto de Playwright.
 - Funciona perfecto con el ciclo de vida de Streamlit.
 - Diagnóstico y logging detallado en consola.
-- Escaneo profundo multietapa: DOM principal, iframes anidados, Shadow DOM y Regex de texto visible.
+- Escaneo profundo multietapa: DOM principal, iframes anidados, Web Components con Shadow DOM
+  (now-content-renderer, macroponent-*, etc. de Next Experience).
 """
 
 import json
@@ -119,8 +120,8 @@ class CDPNativeClient:
 
     def detect_tickets_in_table(self) -> Dict[str, Any]:
         """
-        Escanea exhaustivamente el DOM visible y todos los iframes (Next Experience / UI16 / Service Portal).
-        Devuelve tanto la lista estructurada de tickets como logs de diagnóstico para la consola.
+        Escanea exhaustivamente el DOM visible, incluyendo todos los Web Components y Shadow Roots
+        de ServiceNow Next Experience (Polaris) e iframes encapsulados.
         """
         expr = """
         (function() {
@@ -129,71 +130,72 @@ class CDPNativeClient:
             let totalQueueCount = "";
 
             logs.push("URL actual: " + window.location.href);
-            logs.push("Título actual: " + document.title);
+            logs.push("Título: " + document.title);
 
-            let docs = [document];
-            let allIframes = Array.from(document.querySelectorAll("iframe, frame"));
-            logs.push("iFrames detectados: " + allIframes.length);
+            // Función recursiva para atravesar Shadow DOM y recopilar todos los nodos y documentos
+            let allRoots = [document];
+            let allTexts = [];
 
-            allIframes.forEach((ifr, idx) => {
-                try {
-                    if (ifr.contentDocument) {
-                        docs.push(ifr.contentDocument);
-                        logs.push("iFrame [" + idx + "] accesorio OK: " + (ifr.id || ifr.name || ifr.src));
-                    } else {
-                        logs.push("iFrame [" + idx + "] sin acceso directo al contentDocument.");
-                    }
-                } catch(e) {
-                    logs.push("iFrame [" + idx + "] bloqueado por origen/seguridad: " + e.message);
+            function collectShadowRoots(node) {
+                if (!node) return;
+                if (node.shadowRoot) {
+                    allRoots.push(node.shadowRoot);
+                    collectShadowRoots(node.shadowRoot);
                 }
-            });
-
-            for (let doc of docs) {
-                let pageTexts = (doc.body ? doc.body.innerText : "");
-                let qMatch = pageTexts.match(/\\b(\\d+)\\s+to\\s+(\\d+)\\s+of\\s+(\\d+)\\b/i) ||
-                             pageTexts.match(/\\b(\\d+)\\s+of\\s+(\\d+)\\b/i) ||
-                             pageTexts.match(/\\bTotal:\\s*(\\d+)\\b/i);
-                if (qMatch) {
-                    totalQueueCount = qMatch[0];
-                    logs.push("Conteo de cola detectado en texto: " + totalQueueCount);
-                    break;
+                let children = node.children || [];
+                for (let i = 0; i < children.length; i++) {
+                    let child = children[i];
+                    if (child.tagName && child.tagName.toLowerCase() === 'iframe') {
+                        try {
+                            if (child.contentDocument) {
+                                allRoots.push(child.contentDocument);
+                                collectShadowRoots(child.contentDocument.body);
+                                logs.push("iFrame penetrado con exito: " + (child.id || child.name || child.src));
+                            }
+                        } catch(err) {
+                            logs.push("iFrame protegido por CORS/origen: " + err.message);
+                        }
+                    }
+                    collectShadowRoots(child);
                 }
             }
 
+            collectShadowRoots(document.body || document.documentElement);
+            logs.push("Roots inspeccionados (incluyendo Shadow DOM): " + allRoots.length);
+
+            // Regex de tickets de ServiceNow
             let ticketRegex = /\\b(INC\\d{5,10}|SCTASK\\d{5,10}|TASK\\d{5,10}|RITM\\d{5,10}|REQ\\d{5,10})\\b/gi;
 
-            for (let doc of docs) {
-                let rows = Array.from(doc.querySelectorAll("tr, div[role='row']"));
-                logs.push("Filas (tr/row) evaluadas en documento: " + rows.length);
+            for (let root of allRoots) {
+                // 1. Extraer conteo de Queue en texto
+                let textContent = root.textContent || (root.body ? root.body.innerText : "") || "";
+                if (textContent) allTexts.push(textContent);
 
-                for (let r of rows) {
-                    let rText = (r.innerText || "");
-                    let match = rText.match(ticketRegex);
-                    if (match) {
-                        for (let rawNum of match) {
-                            let num = rawNum.toUpperCase();
-                            if (!foundTickets.some(t => t.number === num)) {
-                                let linkEl = r.querySelector("a, [data-field='number']");
-                                foundTickets.push({
-                                    number: num,
-                                    description: rText.replace(num, "").trim().substring(0, 140),
-                                    hasLink: !!linkEl
-                                });
-                            }
-                        }
-                    }
+                let qMatch = textContent.match(/\\b(\\d+)\\s+to\\s+(\\d+)\\s+of\\s+(\\d+)\\b/i) ||
+                             textContent.match(/\\b(\\d+)\\s+of\\s+(\\d+)\\b/i) ||
+                             textContent.match(/\\bTotal:\\s*(\\d+)\\b/i);
+                if (qMatch && !totalQueueCount) {
+                    totalQueueCount = qMatch[0];
+                    logs.push("Conteo de cola detectado: " + totalQueueCount);
                 }
 
-                let links = Array.from(doc.querySelectorAll("a, span, td"));
-                for (let el of links) {
-                    let txt = (el.innerText || "").trim();
+                // 2. Buscar enlaces o elementos clickeables que contengan números de ticket
+                let candidates = Array.from(root.querySelectorAll("a, td, span, div, p"));
+                for (let el of candidates) {
+                    let txt = (el.innerText || el.textContent || "").trim();
                     let m = txt.match(/^\\b(INC\\d{5,10}|SCTASK\\d{5,10}|TASK\\d{5,10}|RITM\\d{5,10}|REQ\\d{5,10})\\b$/i);
                     if (m) {
                         let num = m[1].toUpperCase();
                         if (!foundTickets.some(t => t.number === num)) {
+                            // Extraer descripción del contenedor padre o fila si es posible
+                            let row = el.closest("tr, div[role='row'], [role='gridcell']");
+                            let desc = "";
+                            if (row) {
+                                desc = (row.innerText || "").replace(num, "").trim().substring(0, 140);
+                            }
                             foundTickets.push({
                                 number: num,
-                                description: "Ticket detectado en elemento " + el.tagName,
+                                description: desc || "Ticket en lista",
                                 hasLink: true
                             });
                         }
@@ -201,28 +203,27 @@ class CDPNativeClient:
                 }
             }
 
+            // 3. Si aún no encuentra por selectores, aplicar Regex a todo el texto concatenado
             if (foundTickets.length === 0) {
-                logs.push("Estrategias A y B no arrojaron tickets. Probando escaneo Regex global...");
-                for (let doc of docs) {
-                    let fullText = (doc.body ? doc.body.innerText : "");
-                    let globalMatches = fullText.match(ticketRegex);
-                    if (globalMatches) {
-                        logs.push("Coincidencias Regex globales encontradas: " + globalMatches.length);
-                        for (let gm of globalMatches) {
-                            let gNum = gm.toUpperCase();
-                            if (!foundTickets.some(t => t.number === gNum)) {
-                                foundTickets.push({
-                                    number: gNum,
-                                    description: "Ticket detectado por escaneo global de texto",
-                                    hasLink: false
-                                });
-                            }
+                logs.push("Búsqueda estructurada no halló tickets. Aplicando Regex en los textos de todos los Roots...");
+                let fullJoinedText = allTexts.join("\\n");
+                let matches = fullJoinedText.match(ticketRegex);
+                if (matches) {
+                    logs.push("Coincidencias en texto: " + matches.length);
+                    for (let rawNum of matches) {
+                        let num = rawNum.toUpperCase();
+                        if (!foundTickets.some(t => t.number === num)) {
+                            foundTickets.push({
+                                number: num,
+                                description: "Ticket detectado en texto",
+                                hasLink: false
+                            });
                         }
                     }
                 }
             }
 
-            logs.push("Total de tickets unicos encontrados: " + foundTickets.length);
+            logs.push("Total de tickets unicos detectados: " + foundTickets.length);
 
             return {
                 tickets: foundTickets,
@@ -233,37 +234,66 @@ class CDPNativeClient:
         """
         try:
             res = self.send("Runtime.evaluate", {"expression": expr, "returnByValue": True})
-            if "result" in res and "value" in res["result"] and isinstance(res["result"]["value"], dict):
-                return res["result"]["value"]
-            error_details = res.get("result", {}).get("description", str(res))
-            return {"tickets": [], "totalQueueText": "0 tickets", "logs": [f"Script evaluado sin retorno de valor dict: {error_details}"]}
+            # Manejar la estructura anidada de Chrome DevTools: res['result']['value']
+            val = res.get("result", {}).get("value")
+            if isinstance(val, dict):
+                return val
+            if isinstance(val, str):
+                try:
+                    return json.loads(val)
+                except Exception:
+                    pass
+            return {
+                "tickets": [],
+                "totalQueueText": "0 tickets",
+                "logs": [f"Retorno inesperado de CDP: {res}"]
+            }
         except Exception as ex:
             print(f"[CDP Native] Error al detectar tickets: {ex}")
-            return {"tickets": [], "totalQueueText": "0 tickets", "logs": [f"Error ejecutando script de escaneo: {ex}"]}
+            return {
+                "tickets": [],
+                "totalQueueText": "0 tickets",
+                "logs": [f"Error ejecutando script de escaneo: {ex}"]
+            }
 
     def open_ticket_by_number(self, ticket_number: str) -> bool:
         """
-        Ubica la celda o enlace correspondiente al ticket en la columna Number y hace clic en él
-        para abrir el formulario completo del ticket.
+        Ubica la celda o enlace correspondiente al ticket en la columna Number
+        (incluso dentro de Shadow DOM o iframes de ServiceNow) y hace clic en él.
         """
         num_clean = ticket_number.strip().upper()
         expr = f"""
         (function() {{
             let targetNum = "{num_clean}";
-            let docs = [document];
-            let allIframes = Array.from(document.querySelectorAll("iframe, frame"));
-            allIframes.forEach(function(ifr) {{
-                try {{
-                    if (ifr.contentDocument) {{
-                        docs.push(ifr.contentDocument);
-                    }}
-                }} catch(e) {{}}
-            }});
+            let allRoots = [document];
 
-            for (let doc of docs) {{
-                let links = Array.from(doc.querySelectorAll("a, td, span, tr, [role='gridcell']"));
-                for (let el of links) {{
-                    let txt = (el.innerText || "").trim().toUpperCase();
+            function collectShadowRoots(node) {{
+                if (!node) return;
+                if (node.shadowRoot) {{
+                    allRoots.push(node.shadowRoot);
+                    collectShadowRoots(node.shadowRoot);
+                }}
+                let children = node.children || [];
+                for (let i = 0; i < children.length; i++) {{
+                    let child = children[i];
+                    if (child.tagName && child.tagName.toLowerCase() === 'iframe') {{
+                        try {{
+                            if (child.contentDocument) {{
+                                allRoots.push(child.contentDocument);
+                                collectShadowRoots(child.contentDocument.body);
+                            }}
+                        }} catch(e) {{}}
+                    }}
+                    collectShadowRoots(child);
+                }}
+            }}
+
+            collectShadowRoots(document.body || document.documentElement);
+
+            for (let root of allRoots) {{
+                let candidates = Array.from(root.querySelectorAll("a, td, span, tr, [role='gridcell'], div"));
+                for (let el of candidates) {{
+                    let txt = (el.innerText || el.textContent || "").trim().toUpperCase();
                     let href = el.getAttribute ? (el.getAttribute("href") || "") : "";
                     if (txt === targetNum || txt.includes(targetNum) || href.includes(targetNum)) {{
                         let clickable = (el.tagName && el.tagName.toLowerCase() === 'a') ? el : (el.querySelector("a") || el);
@@ -287,7 +317,7 @@ class CDPNativeClient:
         except Exception as e:
             print(f"[CDP Native] Error al abrir ticket {ticket_number}: {e}")
 
-        # Fallback: forzar clic
+        # Fallback
         return self.click_selector(f"a:has-text('{num_clean}')") or self.click_selector(num_clean)
 
     def reload(self) -> bool:
