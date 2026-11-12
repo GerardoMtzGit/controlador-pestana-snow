@@ -342,34 +342,31 @@ class TicketClassifierEngine:
     def classify_ticket(self, ticket_data: Dict[str, Any]) -> Dict[str, str]:
         """
         Evalúa un ticket individual de forma estrictamente jerárquica del Paso 1 al Paso 12.
-        Retorna:
-        - Número de Ticket
-        - Descripción
-        - Equipo Destino
-        - Posible Queue
-        - Justificación
-        - Paso Evaluado
+        IMPORTANTE: Utiliza estrictamente el campo 'Description' (o 'More Information') para
+        evaluar las reglas y sugerir el Queue, diferenciándolo claramente de 'Short description'.
         """
         t_num = ticket_data.get("Number", "TICKET").strip()
 
-        # Recopilar todos los campos descriptivos disponibles
-        short_desc = ticket_data.get("Short description", "").strip()
-        full_desc = ticket_data.get("Description", "").strip()
+        # Priorizar estrictamente el campo 'Description' / 'description'
+        full_desc = ticket_data.get("Description", "").strip() or ticket_data.get("description", "").strip()
         more_info = ticket_data.get("More Information (Issue Description)", "").strip()
 
-        combined_text = f"{short_desc} {full_desc} {more_info}".strip()
-        if not combined_text:
-            combined_text = ticket_data.get("description", "Sin descripción registrada").strip()
+        # Texto que se evalúa para las reglas del árbol de decisión
+        eval_text = full_desc or more_info
+        if not eval_text:
+            # Fallback solo si Description no existe en el ticket
+            eval_text = ticket_data.get("Short description", "").strip() or "Sin descripción registrada"
+
+        # Lo que se muestra en la columna 'Descripción' es estrictamente el campo Description
+        display_desc = full_desc or more_info or eval_text
+        if len(display_desc) > 160:
+            display_desc = display_desc[:157] + "..."
 
         # Evaluación jerárquica secuencial estricta (Paso 1 al 11)
         for rule in self.hierarchical_rules:
-            matched_kw = rule.matches(combined_text)
+            matched_kw = rule.matches(eval_text)
             if matched_kw:
                 justification = rule.justification_template.format(matched_kw=matched_kw)
-                display_desc = short_desc or more_info or full_desc or combined_text
-                if len(display_desc) > 130:
-                    display_desc = display_desc[:127] + "..."
-
                 return {
                     "Número de Ticket": t_num,
                     "Descripción": display_desc,
@@ -380,10 +377,6 @@ class TicketClassifierEngine:
                 }
 
         # PASO 12: Cascada Final (Fallback / Service Desk)
-        display_desc = short_desc or more_info or full_desc or combined_text
-        if len(display_desc) > 130:
-            display_desc = display_desc[:127] + "..."
-
         return {
             "Número de Ticket": t_num,
             "Descripción": display_desc,

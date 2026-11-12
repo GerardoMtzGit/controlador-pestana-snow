@@ -606,8 +606,8 @@ class CDPNativeClient:
                 { key: "Assignment group", selectors: ["input[id*='sys_display.'][id*='assignment_group']", "input[name*='assignment_group']", "[data-field='assignment_group']"], labels: [/Assignment group/i, /Grupo de asignación/i] },
                 { key: "Configuration Item", selectors: ["input[id*='sys_display.'][id*='cmdb_ci']", "input[id*='sys_display.'][id*='configuration_item']", "input[id*='.cmdb_ci']", "[data-field='cmdb_ci']"], labels: [/Configuration Item/i, /Configuración ID/i, /Elemento de configuración/i, /^CI/i] },
                 { key: "Assigned to", selectors: ["input[id*='sys_display.'][id*='assigned_to']", "input[name*='assigned_to']", "[data-field='assigned_to']"], labels: [/Assigned to/i, /Asignado a/i] },
-                { key: "Short description", selectors: ["input[id*='.short_description']", "input[name*='short_description']", "[data-field='short_description']"], labels: [/Short description/i, /Descripción corta/i, /Resumen/i] },
-                { key: "Description", selectors: ["textarea[id*='.description']", "textarea[name*='description']", "[data-field='description']"], labels: [/^Description$/i, /^Descripción$/i] }
+                { key: "Short description", selectors: ["input[id*='short_description']", "input[name*='short_description']", "textarea[id*='short_description']", "[data-field='short_description']"], labels: [/short\\s*description/i, /descripción\\s*corta/i] },
+                { key: "Description", selectors: ["textarea[id*='description']:not([id*='short'])", "textarea[name*='description']:not([name*='short'])", "[data-field='description']:not([data-field*='short'])", "textarea#incident\\.description", "textarea#sc_task\\.description", "textarea#task\\.description"], labels: [/^(?!.*short)\\s*description/i, /^(?!.*corta)\\s*descripción/i] }
             ];
 
             for (let f of fieldsMap) {

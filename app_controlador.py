@@ -501,18 +501,17 @@ with col_ctrl:
         st.markdown(f"**📑 Tabla Completa de Formulario (18 Campos Extraídos) (`{len(df_saved)}`):**")
         st.dataframe(df_saved, use_container_width=True)
 
-        # TABLA EXTRA SOLICITADA: Únicamente Número de Ticket y Descripción
+        # TABLA EXTRA SOLICITADA: Únicamente Número de Ticket y Descripción (estrictamente Description)
         st.markdown(f"**📋 Resumen Directo: Número de Ticket y Descripción (`{len(df_saved)}`):**")
         summary_rows = []
         for item in st.session_state.saved_tickets_list:
             t_num = item.get("Number", "").strip()
-            # Seleccionar la descripción más detallada disponible
-            desc_val = (
-                item.get("More Information (Issue Description)") or
-                item.get("Description") or
-                item.get("Short description") or
-                item.get("description", "")
-            ).strip()
+            # Usar estrictamente el campo Description del formulario
+            desc_val = (item.get("Description") or item.get("description", "")).strip()
+            if not desc_val:
+                desc_val = item.get("More Information (Issue Description)", "").strip()
+            if not desc_val:
+                desc_val = "Sin contenido en Description (Short description: " + item.get("Short description", "").strip() + ")"
             summary_rows.append({
                 "Número de Ticket": t_num,
                 "Descripción": desc_val
