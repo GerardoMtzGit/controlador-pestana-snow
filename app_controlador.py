@@ -233,11 +233,23 @@ with col_ctrl:
         if st.button("🔙 Regresar a la Lista de Tickets", use_container_width=True):
             controller.go_back_to_list()
             st.session_state.last_action_msg = "Regresando a la vista de lista..."
-            time.sleep(2.0)
+
+            # Espera de 5 segundos con progreso visual para permitir carga completa de la lista en ServiceNow
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            for i in range(5):
+                time_left = 5 - i
+                status_text.info(f"⏳ ServiceNow cargando lista de tickets... ({time_left}s restantes)")
+                progress_bar.progress((i + 1) * 20)
+                time.sleep(1.0)
+
+            status_text.success("¡Lista de tickets cargada!")
             st.session_state.last_frame = controller.take_screenshot()
             diag = controller.scan_tickets_with_diagnostics()
             st.session_state.detected_tickets = diag.get("tickets", [])
             st.session_state.queue_summary_text = diag.get("totalQueueText", "")
+            st.session_state.last_action_msg = "Lista de tickets cargada y vista espejo actualizada"
+            time.sleep(0.3)
             st.rerun()
 
     with col_nav2:
