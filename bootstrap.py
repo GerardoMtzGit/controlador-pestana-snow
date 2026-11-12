@@ -19,7 +19,8 @@ REQUIRED_LIBRARIES = {
     "streamlit": "streamlit>=1.35.0",
     "playwright": "playwright>=1.44.0",
     "requests": "requests>=2.31.0",
-    "PIL": "pillow>=10.0.0"
+    "PIL": "pillow>=10.0.0",
+    "pandas": "pandas>=2.0.0"
 }
 
 OPTIONAL_LIBRARIES = {

@@ -13,6 +13,7 @@ import time
 import subprocess
 from io import BytesIO
 from PIL import Image
+import pandas as pd
 import streamlit as st
 from tab_engine import CDPBrowserController, TabInfo
 from agent_bridge import HuggingFaceTabAgent
@@ -52,6 +53,15 @@ if "queue_summary_text" not in st.session_state:
 
 if "last_scan_logs" not in st.session_state:
     st.session_state.last_scan_logs = []
+
+if "show_more_tickets" not in st.session_state:
+    st.session_state.show_more_tickets = False
+
+if "extracted_ticket_data" not in st.session_state:
+    st.session_state.extracted_ticket_data = {}
+
+if "saved_tickets_list" not in st.session_state:
+    st.session_state.saved_tickets_list = []
 
 controller: CDPBrowserController = st.session_state.controller
 agent: HuggingFaceTabAgent = st.session_state.agent
@@ -293,28 +303,52 @@ with col_ctrl:
     with col_search_btn:
         if st.button("⚡ Abrir Ticket", type="primary", use_container_width=True):
             if search_num.strip():
-                controller.locate_and_open_ticket(search_num.strip())
-                st.session_state.last_action_msg = f"Abriendo ticket {search_num}..."
+                clean_target = search_num.strip().upper()
+                controller.locate_and_open_ticket(clean_target)
+                st.session_state.last_action_msg = f"Abriendo ticket {clean_target}..."
 
                 # Espera de 10 segundos con progreso visual para dar tiempo a ServiceNow
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 for i in range(10):
                     time_left = 10 - i
-                    status_text.info(f"⏳ ServiceNow cargando ticket {search_num}... ({time_left}s restantes)")
+                    status_text.info(f"⏳ ServiceNow cargando ticket {clean_target}... ({time_left}s restantes)")
                     progress_bar.progress((i + 1) * 10)
                     time.sleep(1.0)
 
-                status_text.success(f"¡Ticket {search_num} cargado!")
+                status_text.success(f"¡Ticket {clean_target} cargado!")
                 st.session_state.last_frame = controller.take_screenshot()
-                st.session_state.last_action_msg = f"Ticket {search_num} cargado y vista espejo actualizada"
+
+                # PASO 3: Extracción automática inmediata de los 16 campos
+                extracted = controller.extract_ticket_form_data()
+                if extracted:
+                    if not extracted.get("Number"):
+                        extracted["Number"] = clean_target
+                    st.session_state.extracted_ticket_data = extracted
+                    existing_idx = next((i for i, r in enumerate(st.session_state.saved_tickets_list) if r.get("Number") == extracted.get("Number")), None)
+                    if existing_idx is not None:
+                        st.session_state.saved_tickets_list[existing_idx] = extracted
+                    else:
+                        st.session_state.saved_tickets_list.append(extracted)
+
+                st.session_state.last_action_msg = f"Ticket {clean_target} cargado y campos guardados en tabla"
                 time.sleep(0.3)
                 st.rerun()
 
     # LISTA DE TICKETS DETECTADOS AUTOMÁTICAMENTE
     if st.session_state.detected_tickets:
-        st.markdown(f"**Tickets disponibles en la tabla (`{len(st.session_state.detected_tickets)}`):**")
-        for idx, t in enumerate(st.session_state.detected_tickets):
+        total_found = len(st.session_state.detected_tickets)
+        st.markdown(f"**Tickets disponibles en la tabla (`{total_found}`):**")
+
+        # Si son más de 3 tickets, mostrar solo el primero y botón para ver el resto
+        tickets_to_render = st.session_state.detected_tickets
+        is_collapsed = False
+
+        if total_found > 3 and not st.session_state.show_more_tickets:
+            tickets_to_render = [st.session_state.detected_tickets[0]]
+            is_collapsed = True
+
+        for idx, t in enumerate(tickets_to_render):
             t_num = t["number"]
             t_desc = t.get("description", "Sin descripción")
             is_first = (idx == 0)
@@ -349,63 +383,95 @@ with col_ctrl:
 
                     status_text.success(f"¡Ticket {t_num} cargado!")
                     st.session_state.last_frame = controller.take_screenshot()
-                    st.session_state.last_action_msg = f"Ticket {t_num} cargado y vista espejo actualizada"
+
+                    # PASO 3: Extracción automática inmediata de los 16 campos
+                    extracted = controller.extract_ticket_form_data()
+                    if extracted:
+                        if not extracted.get("Number"):
+                            extracted["Number"] = t_num
+                        st.session_state.extracted_ticket_data = extracted
+                        existing_idx = next((i for i, r in enumerate(st.session_state.saved_tickets_list) if r.get("Number") == extracted.get("Number")), None)
+                        if existing_idx is not None:
+                            st.session_state.saved_tickets_list[existing_idx] = extracted
+                        else:
+                            st.session_state.saved_tickets_list.append(extracted)
+
+                    st.session_state.last_action_msg = f"Ticket {t_num} cargado y campos guardados en tabla"
                     time.sleep(0.3)
+                    st.rerun()
+
+        # Botón para expandir o contraer cuando hay más de 3 tickets
+        if total_found > 3:
+            if is_collapsed:
+                if st.button(f"➕ Ver más tickets ({total_found - 1} restantes)", use_container_width=True):
+                    st.session_state.show_more_tickets = True
+                    st.rerun()
+            else:
+                if st.button("➖ Ver menos tickets", use_container_width=True):
+                    st.session_state.show_more_tickets = False
                     st.rerun()
     else:
         st.info("💡 Enlaza tu pestaña de ServiceNow en el panel izquierdo; el escaneo se realiza automáticamente.")
 
     st.divider()
 
-    # ================= CONTROLES GENERALES DE MOVIMIENTO =================
-    st.subheader("🎮 Controles para Mover la Pestaña")
+    # ================= FEATURE: PASO 3 - GUARDAR CAMPOS DEL TICKET EN TABLA =================
+    st.markdown("### 📋 Paso 3: Guardar Campos del Ticket en Tabla")
+    st.caption("Extracción y registro de los 16 campos clave del formulario abierto en ServiceNow.")
 
-    b1, b2, b3, b4 = st.columns(4)
-    with b1:
-        if st.button("⬆️ Subir", use_container_width=True):
-            controller.scroll("up", 400)
-            st.session_state.last_frame = controller.take_screenshot()
-            st.session_state.last_action_msg = "Scroll hacia arriba (-400px)"
-            st.rerun()
-    with b2:
-        if st.button("⬇️ Bajar", use_container_width=True):
-            controller.scroll("down", 400)
-            st.session_state.last_frame = controller.take_screenshot()
-            st.session_state.last_action_msg = "Scroll hacia abajo (+400px)"
-            st.rerun()
-    with b3:
-        if st.button("🔄 Recargar", use_container_width=True):
-            controller.reload()
-            st.session_state.last_frame = controller.take_screenshot()
-            st.session_state.last_action_msg = "Pestaña recargada"
-            st.rerun()
-    with b4:
-        if st.button("👁️ Enfocar", use_container_width=True):
-            if st.session_state.selected_tab_id:
-                controller.select_tab_by_id(st.session_state.selected_tab_id)
-                st.session_state.last_action_msg = "Pestaña enfocada al frente"
+    col_p3_1, col_p3_2 = st.columns([1, 1])
+    with col_p3_1:
+        if st.button("📥 Extraer Campos del Ticket Abierto", type="secondary", use_container_width=True):
+            with st.spinner("Extrayendo campos del formulario de ServiceNow..."):
+                data = controller.extract_ticket_form_data()
+                if data:
+                    st.session_state.extracted_ticket_data = data
+                    t_num = data.get("Number", "").strip()
+                    if t_num:
+                        idx_found = next((i for i, r in enumerate(st.session_state.saved_tickets_list) if r.get("Number") == t_num), None)
+                        if idx_found is not None:
+                            st.session_state.saved_tickets_list[idx_found] = data
+                        else:
+                            st.session_state.saved_tickets_list.append(data)
+                    st.session_state.last_action_msg = f"Campos extraídos para {t_num or 'ticket actual'}"
+                    st.session_state.last_frame = controller.take_screenshot()
+                    st.rerun()
 
-    st.divider()
+    with col_p3_2:
+        if st.button("🗑️ Limpiar Tabla Guardada", use_container_width=True):
+            st.session_state.saved_tickets_list = []
+            st.session_state.extracted_ticket_data = {}
+            st.session_state.last_action_msg = "Tabla de tickets limpiada"
+            st.rerun()
 
-    # Acciones Especiales de Formulario
-    st.markdown("#### ⚡ Acciones en Formulario de ServiceNow")
-    sn1, sn2 = st.columns(2)
-    with sn1:
-        if st.button("📝 Ir a Pestaña Notes", use_container_width=True):
-            done = controller.click_element("[data-tab-name*='notes']") or \
-                   controller.click_element("button:has-text('Notes')") or \
-                   controller.click_element("Notes")
-            st.session_state.last_frame = controller.take_screenshot()
-            st.session_state.last_action_msg = "Clic en Notes" if done else "Selector de Notes no encontrado"
-            st.rerun()
-    with sn2:
-        if st.button("💾 Guardar / Update", use_container_width=True):
-            done = controller.click_element("button#sysverb_update") or \
-                   controller.click_element("button:has-text('Update')") or \
-                   controller.click_element("Update")
-            st.session_state.last_frame = controller.take_screenshot()
-            st.session_state.last_action_msg = "Clic en Guardar/Update" if done else "Botón Update no encontrado"
-            st.rerun()
+    # Visualización de la Tabla Guardada con las 16 columnas requeridas
+    field_columns = [
+        "Number", "State", "Affected user", "Channel", "Reported by",
+        "Impact", "Category", "Urgency", "Subcategory", "Priority",
+        "Service", "Assignment group", "Configuration Item", "Assigned to",
+        "Short description", "Description"
+    ]
+
+    if st.session_state.saved_tickets_list:
+        df_saved = pd.DataFrame(st.session_state.saved_tickets_list)
+        for c in field_columns:
+            if c not in df_saved.columns:
+                df_saved[c] = ""
+        df_saved = df_saved[field_columns]
+
+        st.markdown(f"**Registros guardados en tabla (`{len(df_saved)}`):**")
+        st.dataframe(df_saved, use_container_width=True)
+
+        csv_bytes = df_saved.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="💾 Descargar Tabla en CSV",
+            data=csv_bytes,
+            file_name="tickets_servicenow_extraidos.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    else:
+        st.info("💡 Abre un ticket en el Paso 2 o presiona **'📥 Extraer Campos del Ticket Abierto'** para registrar los 16 campos en la tabla.")
 
     st.caption(f"Última acción: **{st.session_state.last_action_msg}**")
 

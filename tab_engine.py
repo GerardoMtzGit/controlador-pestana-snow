@@ -149,6 +149,15 @@ class CDPBrowserController:
         result = client.locate_and_open_ticket(ticket_number)
         return result
 
+    def extract_ticket_form_data(self) -> Dict[str, str]:
+        """PASO 3: Extrae los campos clave del formulario del ticket abierto en ServiceNow."""
+        print("\n📋 [PASO 3: EXTRACCIÓN DE CAMPOS] Inspeccionando formulario...")
+        client = self._get_active_native_client()
+        if not client:
+            return {}
+        data = client.extract_ticket_form_data()
+        return data
+
     def go_back_to_list(self) -> bool:
         """Regresa a la vista anterior (lista de tickets)."""
         print("\n🔙 [ACCIÓN] Regresando a la vista anterior...")

@@ -419,3 +419,231 @@ class CDPNativeClient:
         except Exception as e:
             print(f"[CDP Native] Error al recargar: {e}")
             return False
+
+    def extract_ticket_form_data(self) -> Dict[str, str]:
+        """
+        PASO 3: Extrae los campos clave del formulario de ServiceNow actualmente abierto:
+        - Number
+        - State
+        - Affected user
+        - Channel
+        - Reported by
+        - Impact
+        - Category
+        - Urgency
+        - Subcategory
+        - Priority
+        - Service
+        - Assignment group
+        - Configuration Item
+        - Assigned to
+        - Short description
+        - Description
+        """
+        expr = """
+        (function() {
+            let result = {
+                "Number": "",
+                "State": "",
+                "Affected user": "",
+                "Channel": "",
+                "Reported by": "",
+                "Impact": "",
+                "Category": "",
+                "Urgency": "",
+                "Subcategory": "",
+                "Priority": "",
+                "Service": "",
+                "Assignment group": "",
+                "Configuration Item": "",
+                "Assigned to": "",
+                "Short description": "",
+                "Description": ""
+            };
+
+            // 1. Intentar leer vía g_form de ServiceNow si está disponible en iframe o window
+            let gForm = null;
+            try {
+                let ifr = document.querySelector("iframe#gsft_main");
+                if (ifr && ifr.contentWindow && ifr.contentWindow.g_form) {
+                    gForm = ifr.contentWindow.g_form;
+                } else if (window.g_form) {
+                    gForm = window.g_form;
+                }
+            } catch(e) {}
+
+            if (gForm) {
+                try {
+                    let getGFVal = function(fieldName) {
+                        try {
+                            if (gForm.getDisplayBox && gForm.getDisplayBox(fieldName) && gForm.getDisplayBox(fieldName).value) {
+                                return gForm.getDisplayBox(fieldName).value.trim();
+                            }
+                            if (gForm.getDisplayValue) {
+                                let dv = gForm.getDisplayValue(fieldName);
+                                if (dv) return dv.trim();
+                            }
+                            if (gForm.getValue) {
+                                let v = gForm.getValue(fieldName);
+                                if (v) return v.trim();
+                            }
+                        } catch(err) {}
+                        return "";
+                    };
+
+                    result["Number"] = getGFVal("number");
+                    result["State"] = getGFVal("state");
+                    result["Affected user"] = getGFVal("caller_id") || getGFVal("u_affected_user") || getGFVal("requested_for");
+                    result["Channel"] = getGFVal("contact_type") || getGFVal("channel");
+                    result["Reported by"] = getGFVal("opened_by") || getGFVal("u_reported_by");
+                    result["Impact"] = getGFVal("impact");
+                    result["Category"] = getGFVal("category");
+                    result["Urgency"] = getGFVal("urgency");
+                    result["Subcategory"] = getGFVal("subcategory");
+                    result["Priority"] = getGFVal("priority");
+                    result["Service"] = getGFVal("business_service") || getGFVal("service");
+                    result["Assignment group"] = getGFVal("assignment_group");
+                    result["Configuration Item"] = getGFVal("cmdb_ci") || getGFVal("configuration_item");
+                    result["Assigned to"] = getGFVal("assigned_to");
+                    result["Short description"] = getGFVal("short_description");
+                    result["Description"] = getGFVal("description");
+                } catch(e) {}
+            }
+
+            // 2. Escaneo DOM exhaustivo (Polaris Next Experience + iframe#gsft_main + Shadow DOM)
+            let allRoots = [];
+            function scanNode(node) {
+                if (!node) return;
+                allRoots.push(node);
+                if (node.shadowRoot) scanNode(node.shadowRoot);
+                let children = node.children || [];
+                for (let i = 0; i < children.length; i++) {
+                    let child = children[i];
+                    if (child.tagName && child.tagName.toLowerCase() === 'iframe') {
+                        try {
+                            if (child.contentDocument) scanNode(child.contentDocument);
+                        } catch(e) {}
+                    }
+                    scanNode(child);
+                }
+            }
+            scanNode(document.body || document.documentElement);
+
+            function getElementVal(el) {
+                if (!el) return "";
+                let tag = el.tagName ? el.tagName.toLowerCase() : "";
+                if (tag === 'select') {
+                    let opt = el.options && el.selectedIndex >= 0 ? el.options[el.selectedIndex] : null;
+                    return opt ? (opt.text || opt.value || "").trim() : "";
+                }
+                if (tag === 'textarea' || tag === 'input') {
+                    return (el.value || "").trim();
+                }
+                return (el.innerText || el.textContent || "").trim();
+            }
+
+            function extractField(selectors, labelRegexes) {
+                for (let root of allRoots) {
+                    // Por selectores CSS
+                    for (let sel of selectors) {
+                        try {
+                            let el = root.querySelector(sel);
+                            if (el) {
+                                let v = getElementVal(el);
+                                if (v) return v;
+                            }
+                        } catch(e) {}
+                    }
+
+                    // Por texto de etiqueta (Label)
+                    try {
+                        let labels = Array.from(root.querySelectorAll("label, span.label-text, div.label, span[id*='label']"));
+                        for (let lbl of labels) {
+                            let txt = (lbl.innerText || lbl.textContent || "").trim();
+                            for (let pat of labelRegexes) {
+                                if (pat.test(txt)) {
+                                    let forId = lbl.getAttribute("for");
+                                    if (forId) {
+                                        let disp = root.querySelector("[id='sys_display." + forId + "']");
+                                        if (disp && disp.value) return disp.value.trim();
+                                        let target = root.querySelector("[id='" + forId + "']");
+                                        if (target) {
+                                            let v = getElementVal(target);
+                                            if (v) return v;
+                                        }
+                                    }
+                                    let container = lbl.closest(".form-group, .form-field, tr, div.row, div[role='row']");
+                                    if (container) {
+                                        let disp = container.querySelector("input[id*='sys_display.'], input[name*='sys_display.']");
+                                        if (disp && disp.value) return disp.value.trim();
+                                        let el = container.querySelector("select, textarea, input:not([type='hidden']), span.form-control-static, p.form-control-static, span.sn-widget-read-only");
+                                        if (el) {
+                                            let v = getElementVal(el);
+                                            if (v) return v;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch(e) {}
+                }
+                return "";
+            }
+
+            // Mapeo de campos
+            let fieldsMap = [
+                { key: "Number", selectors: ["input[id*='.number']", "input[name*='.number']", "input[id*='sys_readonly.'][id*='.number']", "[data-field='number']"], labels: [/^Number/i, /^Número/i] },
+                { key: "State", selectors: ["select[id*='.state']", "select[name*='.state']", "input[id*='.state']", "[data-field='state']"], labels: [/^State/i, /^Estado/i] },
+                { key: "Affected user", selectors: ["input[id*='sys_display.'][id*='caller_id']", "input[id*='sys_display.'][id*='u_affected_user']", "input[id*='caller_id']", "input[id*='u_affected_user']", "[data-field='caller_id']", "[data-field='u_affected_user']"], labels: [/Affected user/i, /^Caller/i, /Usuario afectado/i, /^Solicitante/i] },
+                { key: "Channel", selectors: ["select[id*='.contact_type']", "select[name*='.contact_type']", "select[id*='.channel']", "input[id*='.contact_type']", "[data-field='contact_type']"], labels: [/^Channel/i, /^Contact type/i, /^Canal/i, /^Tipo de contacto/i] },
+                { key: "Reported by", selectors: ["input[id*='sys_display.'][id*='opened_by']", "input[id*='sys_display.'][id*='u_reported_by']", "input[id*='.opened_by']", "input[id*='.u_reported_by']", "[data-field='opened_by']"], labels: [/Reported by/i, /Opened by/i, /Reportado por/i, /Abierto por/i] },
+                { key: "Impact", selectors: ["select[id*='.impact']", "input[id*='.impact']", "[data-field='impact']"], labels: [/^Impact/i, /^Impacto/i] },
+                { key: "Category", selectors: ["select[id*='.category']", "input[id*='.category']", "[data-field='category']"], labels: [/^Category/i, /^Categoría/i] },
+                { key: "Urgency", selectors: ["select[id*='.urgency']", "input[id*='.urgency']", "[data-field='urgency']"], labels: [/^Urgency/i, /^Urgencia/i] },
+                { key: "Subcategory", selectors: ["select[id*='.subcategory']", "input[id*='.subcategory']", "[data-field='subcategory']"], labels: [/^Subcategory/i, /^Subcategoría/i] },
+                { key: "Priority", selectors: ["select[id*='.priority']", "input[id*='.priority']", "p[id*='.priority']", "[data-field='priority']"], labels: [/^Priority/i, /^Prioridad/i] },
+                { key: "Service", selectors: ["input[id*='sys_display.'][id*='business_service']", "input[id*='sys_display.'][id*='service']", "input[id*='.business_service']", "input[id*='.service']", "[data-field='business_service']"], labels: [/^Service/i, /^Business Service/i, /^Servicio/i] },
+                { key: "Assignment group", selectors: ["input[id*='sys_display.'][id*='assignment_group']", "input[name*='assignment_group']", "[data-field='assignment_group']"], labels: [/Assignment group/i, /Grupo de asignación/i] },
+                { key: "Configuration Item", selectors: ["input[id*='sys_display.'][id*='cmdb_ci']", "input[id*='sys_display.'][id*='configuration_item']", "input[id*='.cmdb_ci']", "[data-field='cmdb_ci']"], labels: [/Configuration Item/i, /Configuración ID/i, /Elemento de configuración/i, /^CI/i] },
+                { key: "Assigned to", selectors: ["input[id*='sys_display.'][id*='assigned_to']", "input[name*='assigned_to']", "[data-field='assigned_to']"], labels: [/Assigned to/i, /Asignado a/i] },
+                { key: "Short description", selectors: ["input[id*='.short_description']", "input[name*='short_description']", "[data-field='short_description']"], labels: [/Short description/i, /Descripción corta/i, /Resumen/i] },
+                { key: "Description", selectors: ["textarea[id*='.description']", "textarea[name*='description']", "[data-field='description']"], labels: [/^Description$/i, /^Descripción$/i] }
+            ];
+
+            for (let f of fieldsMap) {
+                if (!result[f.key]) {
+                    result[f.key] = extractField(f.selectors, f.labels);
+                }
+            }
+
+            // Fallback para Number desde el título de la página
+            if (!result["Number"]) {
+                let docTitle = document.title || "";
+                let m = docTitle.match(/\\b(INC\\d{5,10}|SCTASK\\d{5,10}|TASK\\d{5,10}|RITM\\d{5,10}|REQ\\d{5,10})\\b/i);
+                if (m) {
+                    result["Number"] = m[1].toUpperCase();
+                }
+            }
+
+            return result;
+        })();
+        """
+        try:
+            res = self.send("Runtime.evaluate", {"expression": expr, "returnByValue": True})
+            result_obj = res.get("result", {})
+            val = result_obj.get("value")
+            if val is None and isinstance(result_obj.get("result"), dict):
+                val = result_obj["result"].get("value")
+
+            if isinstance(val, dict):
+                print(f"[CDP Native] Formulario extraído: Number={val.get('Number')} | State={val.get('State')} | Priority={val.get('Priority')}")
+                return val
+        except Exception as e:
+            print(f"[CDP Native] Error al extraer formulario: {e}")
+
+        return {
+            "Number": "", "State": "", "Affected user": "", "Channel": "", "Reported by": "",
+            "Impact": "", "Category": "", "Urgency": "", "Subcategory": "", "Priority": "",
+            "Service": "", "Assignment group": "", "Configuration Item": "", "Assigned to": "",
+            "Short description": "", "Description": ""
+        }
