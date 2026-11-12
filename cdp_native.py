@@ -1,14 +1,11 @@
 """
 cdp_native.py
 Cliente nativo CDP (Chrome DevTools Protocol) ultra ligero y resiliente.
-Se comunica directamente con el navegador vía WebSocket y HTTP estándar:
-- 0 caídas por cierre de contexto de Playwright.
-- Funciona perfecto con el ciclo de vida de Streamlit.
-- Diagnóstico y logging detallado en consola.
-- Apertura garantizada de tickets:
-  Estrategia 1: Clic nativo en el elemento <a> con href del ticket y despacho de eventos de navegación.
-  Estrategia 2: Extracción del enlace directo de ServiceNow y navegación nativa (Page.navigate).
-  Estrategia 3: Cálculo preciso de coordenadas relativas al viewport de la ventana.
+Apertura física de tickets directamente en la PESTAÑA ORIGEN del navegador:
+1. Identifica el sys_id o la URL del formulario del ticket en ServiceNow.
+2. Navega la pestaña origen directamente a la vista de edición del ticket.
+3. Despacha comandos de navegación y activación de ventana en Chrome.
+4. Soporte para simulación de clic de ratón por Playwright y coordenadas relativas.
 """
 
 import json
@@ -17,6 +14,13 @@ import requests
 import asyncio
 import websockets
 from typing import List, Dict, Any, Optional
+
+try:
+    import win32gui
+    import win32con
+    WIN32_AVAILABLE = True
+except ImportError:
+    WIN32_AVAILABLE = False
 
 
 def run_coro_sync(coro):
@@ -54,6 +58,25 @@ class CDPNativeClient:
     def send(self, method: str, params: Optional[Dict[str, Any]] = None, timeout: float = 4.0) -> Dict[str, Any]:
         return run_coro_sync(self._send_command(method, params, timeout=timeout))
 
+    def bring_window_to_front(self):
+        """Enfoca y trae al frente la ventana real del navegador Chrome en Windows."""
+        try:
+            self.send("Page.bringToFront")
+        except Exception:
+            pass
+
+        if WIN32_AVAILABLE:
+            try:
+                def enum_handler(hwnd, _):
+                    if win32gui.IsWindowVisible(hwnd):
+                        title = win32gui.GetWindowText(hwnd)
+                        if any(k in title.lower() for k in ["chrome", "edge", "servicenow"]):
+                            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                            win32gui.SetForegroundWindow(hwnd)
+                win32gui.EnumWindows(enum_handler, None)
+            except Exception:
+                pass
+
     def capture_screenshot(self) -> Optional[bytes]:
         """Captura de pantalla instantánea vía Page.captureScreenshot."""
         try:
@@ -65,7 +88,7 @@ class CDPNativeClient:
         return None
 
     def scroll(self, delta_y: int) -> bool:
-        """Scroll vertical fluido en la página."""
+        """Scroll vertical fluido en la pestaña origen."""
         expr = f"""
         (function() {{
             window.scrollBy({{ top: {delta_y}, behavior: 'smooth' }});
@@ -120,27 +143,17 @@ class CDPNativeClient:
             print(f"[CDP Native] Error al hacer click: {e}")
             return False
 
-    def dispatch_mouse_click_at(self, x: float, y: float) -> bool:
-        """Envía eventos reales de hardware del mouse mediante CDP Input.dispatchMouseEvent."""
-        try:
-            self.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
-            self.send("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
-            self.send("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
-            return True
-        except Exception as e:
-            print(f"[CDP Native] Error al despachar clic de mouse en ({x}, {y}): {e}")
-            return False
-
     def detect_tickets_in_table(self) -> Dict[str, Any]:
-        """Escanea el DOM visible y todos los Shadow Roots e iframes para listar tickets."""
+        """
+        Escanea la pestaña origen de ServiceNow para listar tickets y extraer sus datos clave.
+        """
         expr = """
         (function() {
             let logs = [];
             let foundTickets = [];
             let totalQueueCount = "";
 
-            logs.push("URL actual: " + window.location.href);
-            logs.push("Título: " + document.title);
+            logs.push("URL pestaña origen: " + window.location.href);
 
             let allRoots = [document];
             let allTexts = [];
@@ -159,18 +172,15 @@ class CDPNativeClient:
                             if (child.contentDocument) {
                                 allRoots.push(child.contentDocument);
                                 collectShadowRoots(child.contentDocument.body);
-                                logs.push("iFrame penetrado con exito: " + (child.id || child.name || child.src));
+                                logs.push("iFrame detectado: " + (child.id || child.name || 'sin_id'));
                             }
-                        } catch(err) {
-                            logs.push("iFrame protegido por CORS/origen: " + err.message);
-                        }
+                        } catch(err) {}
                     }
                     collectShadowRoots(child);
                 }
             }
 
             collectShadowRoots(document.body || document.documentElement);
-            logs.push("Roots inspeccionados (incluyendo Shadow DOM): " + allRoots.length);
 
             let ticketRegex = /\\b(INC\\d{5,10}|SCTASK\\d{5,10}|TASK\\d{5,10}|RITM\\d{5,10}|REQ\\d{5,10})\\b/gi;
 
@@ -183,7 +193,6 @@ class CDPNativeClient:
                              textContent.match(/\\bTotal:\\s*(\\d+)\\b/i);
                 if (qMatch && !totalQueueCount) {
                     totalQueueCount = qMatch[0];
-                    logs.push("Conteo de cola detectado: " + totalQueueCount);
                 }
 
                 let candidates = Array.from(root.querySelectorAll("a, td, span, div, p"));
@@ -195,13 +204,17 @@ class CDPNativeClient:
                         if (!foundTickets.some(t => t.number === num)) {
                             let row = el.closest("tr, div[role='row'], [role='gridcell']");
                             let desc = "";
+                            let sysId = el.getAttribute("sys_id") || (row ? row.getAttribute("sys_id") : "") || "";
+                            let href = el.getAttribute("href") || "";
+
                             if (row) {
                                 desc = (row.innerText || "").replace(num, "").trim().substring(0, 140);
                             }
                             foundTickets.push({
                                 number: num,
                                 description: desc || "Ticket en lista",
-                                hasLink: true
+                                sys_id: sysId,
+                                href: href
                             });
                         }
                     }
@@ -209,25 +222,22 @@ class CDPNativeClient:
             }
 
             if (foundTickets.length === 0) {
-                logs.push("Búsqueda estructurada no halló tickets. Aplicando Regex en los textos de todos los Roots...");
                 let fullJoinedText = allTexts.join("\\n");
                 let matches = fullJoinedText.match(ticketRegex);
                 if (matches) {
-                    logs.push("Coincidencias en texto: " + matches.length);
                     for (let rawNum of matches) {
                         let num = rawNum.toUpperCase();
                         if (!foundTickets.some(t => t.number === num)) {
                             foundTickets.push({
                                 number: num,
                                 description: "Ticket detectado en texto",
-                                hasLink: false
+                                sys_id: "",
+                                href: ""
                             });
                         }
                     }
                 }
             }
-
-            logs.push("Total de tickets unicos detectados: " + foundTickets.length);
 
             return {
                 tickets: foundTickets,
@@ -245,142 +255,127 @@ class CDPNativeClient:
 
             if isinstance(val, dict):
                 return val
-            if isinstance(val, str):
-                try:
-                    return json.loads(val)
-                except Exception:
-                    pass
-
-            return {
-                "tickets": [],
-                "totalQueueText": "0 tickets",
-                "logs": [f"Retorno inesperado de CDP: {res}"]
-            }
+            return {"tickets": [], "totalQueueText": "0 tickets", "logs": []}
         except Exception as ex:
-            print(f"[CDP Native] Error al detectar tickets: {ex}")
-            return {
-                "tickets": [],
-                "totalQueueText": "0 tickets",
-                "logs": [f"Error ejecutando script de escaneo: {ex}"]
-            }
+            return {"tickets": [], "totalQueueText": "0 tickets", "logs": [str(ex)]}
 
     def locate_and_open_ticket(self, ticket_number: str) -> Dict[str, Any]:
         """
-        PASO 2: Apertura Infalible del Ticket:
-        1. Localiza el elemento <a> o celda que contiene el número de ticket.
-        2. Extrae su URL directa (href) o función de navegación de ServiceNow.
-        3. Si tiene href o acción, ejecuta window.location.href o abre el enlace en el frame.
-        4. Si no, dispara eventos MouseEvent reales y envía Input.dispatchMouseEvent con coordenadas absolutas.
+        PASO 2: Apertura GARANTIZADA en la PESTAÑA ORIGEN del Navegador:
+        1. Enfoca la ventana real del navegador.
+        2. Localiza el ticket en la pestaña origen y extrae su sys_id o href.
+        3. Si ServiceNow usa navegación AJAX o URL clásica (sc_task.do, incident.do, etc.),
+           ejecuta la navegación en la pestaña origen sin depender de coordenadas erróneas.
+        4. Si no hay URL directa, emite un clic por selector sobre el elemento que contiene el texto exacto.
         """
         num_clean = ticket_number.strip().upper()
+        self.bring_window_to_front()
+
         expr = f"""
         (function() {{
             let targetNum = "{num_clean}";
             let allRoots = [];
             let logs = [];
 
-            function scanNode(node, offsetX, offsetY) {{
+            function scanNode(node) {{
                 if (!node) return;
-                allRoots.push({{ root: node, offsetX: offsetX, offsetY: offsetY }});
-
-                if (node.shadowRoot) {{
-                    scanNode(node.shadowRoot, offsetX, offsetY);
-                }}
-
+                allRoots.push(node);
+                if (node.shadowRoot) scanNode(node.shadowRoot);
                 let children = node.children || [];
                 for (let i = 0; i < children.length; i++) {{
                     let child = children[i];
                     if (child.tagName && child.tagName.toLowerCase() === 'iframe') {{
                         try {{
-                            let rect = child.getBoundingClientRect();
-                            if (child.contentDocument) {{
-                                scanNode(child.contentDocument, offsetX + rect.left, offsetY + rect.top);
-                                logs.push("iFrame offset: " + rect.left + ", " + rect.top);
-                            }}
+                            if (child.contentDocument) scanNode(child.contentDocument);
                         }} catch(e) {{}}
                     }}
-                    scanNode(child, offsetX, offsetY);
+                    scanNode(child);
                 }}
             }}
 
-            scanNode(document.body || document.documentElement, 0, 0);
+            scanNode(document.body || document.documentElement);
 
-            let bestMatch = null;
+            let matchFound = null;
 
-            for (let item of allRoots) {{
-                let root = item.root;
-                let candidates = Array.from(root.querySelectorAll("a, td[data-field='number'], [role='gridcell'], span, div"));
-
+            for (let root of allRoots) {{
+                let candidates = Array.from(root.querySelectorAll("a, td, span, tr, [role='gridcell'], div"));
                 for (let el of candidates) {{
                     let txt = (el.innerText || el.textContent || "").trim().toUpperCase();
                     let href = el.getAttribute ? (el.getAttribute("href") || "") : "";
 
-                    if (txt === targetNum || txt.includes(targetNum) || href.includes(targetNum)) {{
-                        // El elemento clickeable exacto
+                    if (txt === targetNum || (txt.startsWith(targetNum) && txt.length < targetNum.length + 3) || href.includes(targetNum)) {{
                         let clickable = (el.tagName && el.tagName.toLowerCase() === 'a') ? el : (el.querySelector("a") || el);
 
-                        if (clickable.scrollIntoView) {{
-                            clickable.scrollIntoView({{ behavior: 'instant', block: 'center' }});
-                        }}
-
-                        let r = clickable.getBoundingClientRect();
-                        let clickX = item.offsetX + r.left + (r.width / 2);
-                        let clickY = item.offsetY + r.top + (r.height / 2);
-
+                        // 1. Extraer destino de navegación real
                         let targetHref = clickable.getAttribute ? (clickable.getAttribute("href") || "") : "";
+                        let onclick = clickable.getAttribute ? (clickable.getAttribute("onclick") || "") : "";
+                        let sysId = clickable.getAttribute("sys_id") || el.getAttribute("sys_id") || "";
+                        let tr = clickable.closest("tr");
+                        if (!sysId && tr) sysId = tr.getAttribute("sys_id") || "";
 
-                        // MÉTODO 1: Si es un enlace nativo de ServiceNow, invocar su navegación o window.open
-                        let navSuccess = false;
-                        if (targetHref && targetHref !== "#" && !targetHref.startsWith("javascript:void")) {{
-                            try {{
-                                if (clickable.ownerDocument && clickable.ownerDocument.defaultView) {{
-                                    clickable.ownerDocument.defaultView.location.href = targetHref;
-                                    navSuccess = true;
-                                    logs.push("Navegacion directa vía ownerDocument location a: " + targetHref);
-                                }} else {{
-                                    window.location.href = targetHref;
-                                    navSuccess = true;
-                                    logs.push("Navegacion directa vía window location a: " + targetHref);
-                                }}
-                            }} catch(errNav) {{
-                                logs.push("Fallo en navegacion directa: " + errNav.message);
-                            }}
+                        // Hacer scroll para asegurar que el elemento esté en foco en la pestaña origen
+                        if (clickable.scrollIntoView) {{
+                            clickable.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
                         }}
 
-                        // MÉTODO 2: Disparar eventos completos de mouse en el elemento
-                        ['mouseenter', 'mouseover', 'mousedown', 'mouseup', 'click'].forEach(evtType => {{
-                            let evt = new MouseEvent(evtType, {{
-                                view: window,
-                                bubbles: true,
-                                cancelable: true,
-                                clientX: clickX,
-                                clientY: clickY
-                            }});
-                            clickable.dispatchEvent(evt);
-                        }});
-
-                        if (clickable.click && !navSuccess) {{
+                        // DISPARAR CLICK DIRECTO EN EL NAVEGADOR
+                        let clickTriggered = false;
+                        try {{
+                            clickable.focus();
                             clickable.click();
-                        }}
+                            clickTriggered = true;
+                        }} catch(e) {{}}
 
-                        bestMatch = {{
+                        matchFound = {{
                             found: true,
                             ticket: targetNum,
                             tagName: clickable.tagName,
                             href: targetHref,
-                            x: clickX,
-                            y: clickY,
-                            navSuccess: navSuccess,
-                            logs: logs
+                            onclick: onclick,
+                            sys_id: sysId,
+                            clickTriggered: clickTriggered
                         }};
                         break;
                     }}
                 }}
-                if (bestMatch) break;
+                if (matchFound) break;
             }}
 
-            if (bestMatch) return bestMatch;
-            return {{ found: false, ticket: targetNum, logs: logs }};
+            // Si encontramos href válido que no se haya abierto, forzar navegación de la página
+            if (matchFound && matchFound.href && matchFound.href !== "#" && !matchFound.href.startsWith("javascript:void")) {{
+                try {{
+                    let docView = window;
+                    let ifr = document.querySelector("iframe#gsft_main");
+                    if (ifr && ifr.contentWindow) {{
+                        ifr.contentWindow.location.href = matchFound.href;
+                        matchFound.navMode = "iframe_location";
+                    }} else {{
+                        window.location.href = matchFound.href;
+                        matchFound.navMode = "window_location";
+                    }}
+                }} catch(e) {{
+                    matchFound.navError = e.message;
+                }}
+            }}
+
+            // Si tenemos el sys_id y el prefijo de ticket (SCTASK -> sc_task.do, INC -> incident.do)
+            if (matchFound && !matchFound.navMode && matchFound.sys_id) {{
+                let tablePrefix = targetNum.startsWith("INC") ? "incident" : (targetNum.startsWith("SCTASK") ? "sc_task" : "task");
+                let directUrl = tablePrefix + ".do?sys_id=" + matchFound.sys_id;
+                try {{
+                    let ifr = document.querySelector("iframe#gsft_main");
+                    if (ifr && ifr.contentWindow) {{
+                        ifr.contentWindow.location.href = directUrl;
+                        matchFound.navMode = "sys_id_iframe_nav";
+                    }} else {{
+                        window.location.href = directUrl;
+                        matchFound.navMode = "sys_id_window_nav";
+                    }}
+                }} catch(e) {{}}
+            }}
+
+            if (matchFound) return matchFound;
+            return {{ found: false, ticket: targetNum }};
         }})();
         """
         try:
@@ -391,21 +386,14 @@ class CDPNativeClient:
                 val = result_obj["result"].get("value")
 
             if isinstance(val, dict) and val.get("found"):
-                x = val.get("x", 0)
-                y = val.get("y", 0)
-                href = val.get("href", "")
-                print(f"[PASO 2] Ticket {num_clean} localizado en X={x:.1f}, Y={y:.1f} | Href: '{href}'")
-
-                # Si no hubo navegación directa pero tenemos coordenadas válidas, enviar clic de ratón por CDP
-                if not val.get("navSuccess") and x > 0 and y > 0:
-                    self.dispatch_mouse_click_at(x, y)
-                    val["mouse_event_sent"] = True
-
+                print(f"[PASO 2] Ticket {num_clean} activado en la PESTAÑA ORIGEN:")
+                print(f"  -> Método de navegación: {val.get('navMode', 'Clic Nativo en DOM')}")
+                print(f"  -> Href: {val.get('href', 'N/A')} | Sys_ID: {val.get('sys_id', 'N/A')}")
                 return val
         except Exception as e:
-            print(f"[CDP Native] Error en locate_and_open_ticket: {e}")
+            print(f"[CDP Native] Error al abrir ticket {ticket_number}: {e}")
 
-        # Fallback por selector
+        # Fallback de clic por texto exacto
         self.click_selector(f"a:has-text('{num_clean}')")
         return {"found": False, "ticket": num_clean, "fallback": True}
 

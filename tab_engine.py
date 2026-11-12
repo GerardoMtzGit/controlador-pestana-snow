@@ -1,7 +1,7 @@
 """
 tab_engine.py
 Motor híbrido de descubrimiento y control de pestañas vía Chrome DevTools Protocol (CDP).
-Incluye Feature Paso 2: Escaneo y apertura mediante posicionamiento de Mouse en coordenadas visuales reales.
+Apertura física de tickets garantizada en la PESTAÑA ORIGEN del navegador.
 """
 
 import json
@@ -121,11 +121,10 @@ class CDPBrowserController:
 
     def scan_tickets_with_diagnostics(self) -> Dict[str, Any]:
         """
-        Escanea la tabla de ServiceNow, genera logs detallados en la consola
-        y retorna la lista de tickets junto con el texto de la cola (Queue).
+        Escanea la tabla de ServiceNow en la pestaña origen y genera logs en consola.
         """
         print("\n" + "="*50)
-        print("🔍 [INICIANDO ESCANEO DE TICKETS EN SERVICENOW]")
+        print("🔍 [ESCANEO AUTOMÁTICO EN PESTAÑA ORIGEN DE SERVICENOW]")
         print("="*50)
 
         client = self._get_active_native_client()
@@ -138,27 +137,21 @@ class CDPBrowserController:
             }
 
         diag = client.detect_tickets_in_table()
-        logs = diag.get("logs", [])
         tickets = diag.get("tickets", [])
         queue_text = diag.get("totalQueueText", "")
 
-        for line in logs:
-            print(f"  [DOM Log] {line}")
-
-        print(f"\n📊 [RESULTADO] Tickets encontrados: {len(tickets)} | Estado de la cola: {queue_text}")
+        print(f"📊 [RESULTADO] Tickets detectados: {len(tickets)} | Estado de la cola: {queue_text}")
         for idx, t in enumerate(tickets, 1):
-            print(f"   {idx}. {t.get('number')} -> {t.get('description', '')[:60]}")
+            print(f"   {idx}. {t.get('number')} (Sys_ID: {t.get('sys_id', 'N/A')[:10]}...) -> {t.get('description', '')[:50]}")
         print("="*50 + "\n")
 
         return diag
 
     def locate_and_open_ticket(self, ticket_number: str) -> Dict[str, Any]:
         """
-        PASO 2:
-        Busca el ticket por su número exacto en pantalla, posiciona el mouse sobre él
-        mediante CDP Input.dispatchMouseEvent y lo abre.
+        PASO 2: Apertura en la PESTAÑA ORIGEN real del navegador.
         """
-        print(f"\n🎯 [PASO 2: POSICIONAR MOUSE Y ABRIR TICKET] {ticket_number}")
+        print(f"\n🎯 [PASO 2: ABRIR TICKET EN PESTAÑA ORIGEN] Objetivo: {ticket_number}")
         client = self._get_active_native_client()
         if not client:
             print("[ERROR] Cliente no disponible.")
@@ -166,13 +159,8 @@ class CDPBrowserController:
 
         result = client.locate_and_open_ticket(ticket_number)
         
-        if result.get("found"):
-            print(f"  ✓ Posición del Mouse: X={result.get('x', 0):.1f}, Y={result.get('y', 0):.1f}")
-            print(f"  ✓ Eventos de Mouse físico despachados con éxito.")
-        else:
-            print(f"  ⚠️ No se pudieron calcular coordenadas visuales directas. Usando fallback de selección.")
-
-        time.sleep(1.2)
+        # Esperar a que la página de ServiceNow cargue el formulario en la pestaña origen
+        time.sleep(1.8)
         self.take_screenshot()
         return result
 
