@@ -3,9 +3,9 @@ cdp_native.py
 Cliente nativo CDP (Chrome DevTools Protocol) ultra ligero y resiliente.
 Apertura física de tickets directamente en la PESTAÑA ORIGEN del navegador:
 1. Identifica el sys_id o la URL del formulario del ticket en ServiceNow.
-2. Navega la pestaña origen directamente a la vista de edición del ticket.
-3. Despacha comandos de navegación y activación de ventana en Chrome.
-4. Soporte para simulación de clic de ratón por Playwright y coordenadas relativas.
+2. Abre el ticket EXACTAMENTE UNA SOLA VEZ (sin duplicar aperturas).
+3. Función de retroceso / volver a la vista anterior (history.back).
+4. Actualización sincronizada de fotograma espejo.
 """
 
 import json
@@ -143,6 +143,31 @@ class CDPNativeClient:
             print(f"[CDP Native] Error al hacer click: {e}")
             return False
 
+    def go_back(self) -> bool:
+        """
+        Regresa a la vista anterior (historial del navegador o del iFrame gsft_main de ServiceNow).
+        """
+        expr = """
+        (function() {
+            let ifr = document.querySelector("iframe#gsft_main");
+            if (ifr && ifr.contentWindow && ifr.contentWindow.history && ifr.contentWindow.history.length > 1) {
+                ifr.contentWindow.history.back();
+                return { mode: "iframe_history_back" };
+            }
+            if (window.history && window.history.length > 1) {
+                window.history.back();
+                return { mode: "window_history_back" };
+            }
+            return { mode: "none" };
+        })();
+        """
+        try:
+            self.send("Runtime.evaluate", {"expression": expr, "returnByValue": True})
+            return True
+        except Exception as e:
+            print(f"[CDP Native] Error en go_back: {e}")
+            return False
+
     def detect_tickets_in_table(self) -> Dict[str, Any]:
         """
         Escanea la pestaña origen de ServiceNow para listar tickets y extraer sus datos clave.
@@ -261,12 +286,10 @@ class CDPNativeClient:
 
     def locate_and_open_ticket(self, ticket_number: str) -> Dict[str, Any]:
         """
-        PASO 2: Apertura GARANTIZADA en la PESTAÑA ORIGEN del Navegador:
-        1. Enfoca la ventana real del navegador.
-        2. Localiza el ticket en la pestaña origen y extrae su sys_id o href.
-        3. Si ServiceNow usa navegación AJAX o URL clásica (sc_task.do, incident.do, etc.),
-           ejecuta la navegación en la pestaña origen sin depender de coordenadas erróneas.
-        4. Si no hay URL directa, emite un clic por selector sobre el elemento que contiene el texto exacto.
+        PASO 2: Apertura EXACTA UNA SOLA VEZ en la PESTAÑA ORIGEN del Navegador:
+        - Si el elemento tiene un href válido de ServiceNow, se navega solo por ese medio.
+        - Si no tiene href, se ejecuta únicamente el clic en el elemento.
+        - Evita doble activación (un solo disparo garantizado).
         """
         num_clean = ticket_number.strip().upper()
         self.bring_window_to_front()
@@ -275,7 +298,6 @@ class CDPNativeClient:
         (function() {{
             let targetNum = "{num_clean}";
             let allRoots = [];
-            let logs = [];
 
             function scanNode(node) {{
                 if (!node) return;
@@ -306,75 +328,69 @@ class CDPNativeClient:
                     if (txt === targetNum || (txt.startsWith(targetNum) && txt.length < targetNum.length + 3) || href.includes(targetNum)) {{
                         let clickable = (el.tagName && el.tagName.toLowerCase() === 'a') ? el : (el.querySelector("a") || el);
 
-                        // 1. Extraer destino de navegación real
                         let targetHref = clickable.getAttribute ? (clickable.getAttribute("href") || "") : "";
-                        let onclick = clickable.getAttribute ? (clickable.getAttribute("onclick") || "") : "";
                         let sysId = clickable.getAttribute("sys_id") || el.getAttribute("sys_id") || "";
                         let tr = clickable.closest("tr");
                         if (!sysId && tr) sysId = tr.getAttribute("sys_id") || "";
 
-                        // Hacer scroll para asegurar que el elemento esté en foco en la pestaña origen
                         if (clickable.scrollIntoView) {{
                             clickable.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
                         }}
 
-                        // DISPARAR CLICK DIRECTO EN EL NAVEGADOR
-                        let clickTriggered = false;
+                        // ESTRATEGIA 1: Si hay URL directa de ServiceNow, navegar de forma única
+                        if (targetHref && targetHref !== "#" && !targetHref.startsWith("javascript:void")) {{
+                            try {{
+                                let ifr = document.querySelector("iframe#gsft_main");
+                                if (ifr && ifr.contentWindow) {{
+                                    ifr.contentWindow.location.href = targetHref;
+                                }} else {{
+                                    window.location.href = targetHref;
+                                }}
+                                return {{
+                                    found: true,
+                                    ticket: targetNum,
+                                    action: "single_href_nav",
+                                    href: targetHref
+                                }};
+                            }} catch(e) {{}}
+                        }}
+
+                        // ESTRATEGIA 2: Si tiene sys_id identificado
+                        if (sysId) {{
+                            let tablePrefix = targetNum.startsWith("INC") ? "incident" : (targetNum.startsWith("SCTASK") ? "sc_task" : "task");
+                            let directUrl = tablePrefix + ".do?sys_id=" + sysId;
+                            try {{
+                                let ifr = document.querySelector("iframe#gsft_main");
+                                if (ifr && ifr.contentWindow) {{
+                                    ifr.contentWindow.location.href = directUrl;
+                                }} else {{
+                                    window.location.href = directUrl;
+                                }}
+                                return {{
+                                    found: true,
+                                    ticket: targetNum,
+                                    action: "single_sysid_nav",
+                                    url: directUrl
+                                }};
+                            }} catch(e) {{}}
+                        }}
+
+                        // ESTRATEGIA 3: Clic único y enfocado
                         try {{
                             clickable.focus();
                             clickable.click();
-                            clickTriggered = true;
+                            return {{
+                                found: true,
+                                ticket: targetNum,
+                                action: "single_dom_click"
+                            }};
                         }} catch(e) {{}}
 
-                        matchFound = {{
-                            found: true,
-                            ticket: targetNum,
-                            tagName: clickable.tagName,
-                            href: targetHref,
-                            onclick: onclick,
-                            sys_id: sysId,
-                            clickTriggered: clickTriggered
-                        }};
                         break;
                     }}
                 }}
-                if (matchFound) break;
             }}
 
-            // Si encontramos href válido que no se haya abierto, forzar navegación de la página
-            if (matchFound && matchFound.href && matchFound.href !== "#" && !matchFound.href.startsWith("javascript:void")) {{
-                try {{
-                    let docView = window;
-                    let ifr = document.querySelector("iframe#gsft_main");
-                    if (ifr && ifr.contentWindow) {{
-                        ifr.contentWindow.location.href = matchFound.href;
-                        matchFound.navMode = "iframe_location";
-                    }} else {{
-                        window.location.href = matchFound.href;
-                        matchFound.navMode = "window_location";
-                    }}
-                }} catch(e) {{
-                    matchFound.navError = e.message;
-                }}
-            }}
-
-            // Si tenemos el sys_id y el prefijo de ticket (SCTASK -> sc_task.do, INC -> incident.do)
-            if (matchFound && !matchFound.navMode && matchFound.sys_id) {{
-                let tablePrefix = targetNum.startsWith("INC") ? "incident" : (targetNum.startsWith("SCTASK") ? "sc_task" : "task");
-                let directUrl = tablePrefix + ".do?sys_id=" + matchFound.sys_id;
-                try {{
-                    let ifr = document.querySelector("iframe#gsft_main");
-                    if (ifr && ifr.contentWindow) {{
-                        ifr.contentWindow.location.href = directUrl;
-                        matchFound.navMode = "sys_id_iframe_nav";
-                    }} else {{
-                        window.location.href = directUrl;
-                        matchFound.navMode = "sys_id_window_nav";
-                    }}
-                }} catch(e) {{}}
-            }}
-
-            if (matchFound) return matchFound;
             return {{ found: false, ticket: targetNum }};
         }})();
         """
@@ -386,14 +402,12 @@ class CDPNativeClient:
                 val = result_obj["result"].get("value")
 
             if isinstance(val, dict) and val.get("found"):
-                print(f"[PASO 2] Ticket {num_clean} activado en la PESTAÑA ORIGEN:")
-                print(f"  -> Método de navegación: {val.get('navMode', 'Clic Nativo en DOM')}")
-                print(f"  -> Href: {val.get('href', 'N/A')} | Sys_ID: {val.get('sys_id', 'N/A')}")
+                print(f"[PASO 2] Ticket {num_clean} abierto (DISPARO ÚNICO): {val.get('action')}")
                 return val
         except Exception as e:
             print(f"[CDP Native] Error al abrir ticket {ticket_number}: {e}")
 
-        # Fallback de clic por texto exacto
+        # Fallback único
         self.click_selector(f"a:has-text('{num_clean}')")
         return {"found": False, "ticket": num_clean, "fallback": True}
 

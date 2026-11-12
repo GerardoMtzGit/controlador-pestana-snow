@@ -1,12 +1,11 @@
 """
 app_controlador.py
 Interfaz interactiva y clara para seleccionar y controlar pestañas de ServiceNow.
-Incluye Feature Paso 2 (Auto-Scan):
-- Escaneo automático inmediato al enlazar la pestaña o refrescar (sin necesidad de botón manual).
-- Banner informativo con el total de tickets en el Queue.
-- Buscador inteligente de ticket por número/nombre.
-- Localización precisa del elemento en pantalla y posicionamiento del cursor con CDP Input.dispatchMouseEvent.
-- Apertura automática de ticket individual o por búsqueda.
+Incluye:
+- Apertura garantizada en un solo disparo (sin doble ventana/pestaña).
+- Botón destacado '🔙 Regresar a la Lista de Tickets'.
+- Actualización automática e inmediata de la vista espejo al abrir o volver.
+- Detección visual y controles completos.
 """
 
 import os
@@ -110,7 +109,7 @@ st.markdown("""
 <div class="se-banner">
     <h2 style="margin:0; font-size:1.4rem; font-weight:700;">⚡ Controlador Directo de Pestaña ServiceNow</h2>
     <p style="margin:4px 0 0 0; font-size:0.88rem; color:#cbd5e1;">
-        Paso 2: Búsqueda del ticket, posicionamiento de Mouse en la columna <strong>Number</strong> y apertura automática.
+        Paso 2: Apertura en 1 solo disparo, actualización instantánea de vista espejo y botón para regresar a la lista.
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -162,12 +161,12 @@ with st.sidebar:
                 st.session_state.selected_tab_id = target_snow.tab_id
                 st.session_state.selected_tab_title = target_snow.title
                 st.session_state.last_action_msg = f"Enlazado a ServiceNow: {target_snow.title[:30]}"
-                # Escaneo automático al enlazar
                 diag = controller.scan_tickets_with_diagnostics()
                 st.session_state.detected_tickets = diag.get("tickets", [])
                 st.session_state.queue_summary_text = diag.get("totalQueueText", "")
                 st.session_state.last_scan_logs = diag.get("logs", [])
-                st.success("¡Pestaña de ServiceNow vinculada y escaneada automáticamente!")
+                st.session_state.last_frame = controller.take_screenshot()
+                st.success("¡Pestaña de ServiceNow vinculada!")
                 time.sleep(0.3)
                 st.rerun()
 
@@ -194,12 +193,12 @@ with st.sidebar:
                 st.session_state.selected_tab_id = selected_id
                 st.session_state.selected_tab_title = selected_title
                 st.session_state.last_action_msg = f"Enlazado a: {selected_title[:30]}"
-                # Escaneo automático al enlazar
                 diag = controller.scan_tickets_with_diagnostics()
                 st.session_state.detected_tickets = diag.get("tickets", [])
                 st.session_state.queue_summary_text = diag.get("totalQueueText", "")
                 st.session_state.last_scan_logs = diag.get("logs", [])
-                st.success("¡Pestaña enlazada y escaneada!")
+                st.session_state.last_frame = controller.take_screenshot()
+                st.success("¡Pestaña enlazada!")
                 time.sleep(0.3)
                 st.rerun()
         with col_act2:
@@ -209,6 +208,7 @@ with st.sidebar:
                     st.session_state.detected_tickets = diag.get("tickets", [])
                     st.session_state.queue_summary_text = diag.get("totalQueueText", "")
                     st.session_state.last_scan_logs = diag.get("logs", [])
+                    st.session_state.last_frame = controller.take_screenshot()
                 st.rerun()
 
     else:
@@ -227,12 +227,34 @@ with col_ctrl:
     # ================= FEATURE: PASO 2 - ESCANEAR Y ABRIR EL TICKET =================
     st.markdown("### 🎯 Paso 2: Escanear y Abrir el Ticket")
 
-    # Si hay una pestaña enlazada pero aún no se escanearon tickets, escanear automáticamente en segundo plano
+    # Botón Destacado: Regresar a la Lista Anterior
+    col_nav1, col_nav2 = st.columns([1, 1])
+    with col_nav1:
+        if st.button("🔙 Regresar a la Lista de Tickets", use_container_width=True):
+            controller.go_back_to_list()
+            st.session_state.last_action_msg = "Regresando a la vista de lista..."
+            # Actualizar espejo y re-escanear
+            st.session_state.last_frame = controller.take_screenshot()
+            diag = controller.scan_tickets_with_diagnostics()
+            st.session_state.detected_tickets = diag.get("tickets", [])
+            st.session_state.queue_summary_text = diag.get("totalQueueText", "")
+            st.rerun()
+
+    with col_nav2:
+        if st.button("🔄 Refrescar Tickets", use_container_width=True):
+            diag = controller.scan_tickets_with_diagnostics()
+            st.session_state.detected_tickets = diag.get("tickets", [])
+            st.session_state.queue_summary_text = diag.get("totalQueueText", "")
+            st.session_state.last_frame = controller.take_screenshot()
+            st.rerun()
+
+    # Si hay una pestaña enlazada pero aún no se escanearon tickets, escanear automáticamente
     if st.session_state.selected_tab_id and not st.session_state.detected_tickets:
         diag = controller.scan_tickets_with_diagnostics()
         st.session_state.detected_tickets = diag.get("tickets", [])
         st.session_state.queue_summary_text = diag.get("totalQueueText", "")
         st.session_state.last_scan_logs = diag.get("logs", [])
+        st.session_state.last_frame = controller.take_screenshot()
 
     # Banner con información del Queue
     if st.session_state.queue_summary_text:
@@ -242,8 +264,8 @@ with col_ctrl:
         </div>
         """, unsafe_allow_html=True)
 
-    # FUNCIÓN DE BÚSQUEDA Y APERTURA DIRECTA CON POSICIONAMIENTO DE MOUSE
-    st.markdown("#### 🔎 Búsqueda y Posicionamiento de Mouse")
+    # FUNCIÓN DE BÚSQUEDA Y APERTURA DIRECTA (1 SOLO DISPARO)
+    st.markdown("#### 🔎 Búsqueda de Ticket")
     col_search_inp, col_search_btn = st.columns([2, 1])
 
     suggested_val = st.session_state.detected_tickets[0]["number"] if st.session_state.detected_tickets else ""
@@ -257,20 +279,18 @@ with col_ctrl:
         )
 
     with col_search_btn:
-        if st.button("🖱️ Buscar y Abrir", type="primary", use_container_width=True):
+        if st.button("⚡ Abrir Ticket", type="primary", use_container_width=True):
             if search_num.strip():
-                with st.spinner(f"Buscando {search_num} y posicionando mouse..."):
+                with st.spinner(f"Abriendo {search_num}..."):
                     res = controller.locate_and_open_ticket(search_num.strip())
-                    if res.get("found"):
-                        st.session_state.last_action_msg = f"Mouse posicionado en X={res.get('x',0):.1f}, Y={res.get('y',0):.1f} para abrir {search_num}"
-                        st.success(f"¡Ticket {search_num} encontrado y abierto!")
-                    else:
-                        st.session_state.last_action_msg = f"Ticket {search_num} abierto mediante fallback"
-                        st.info(f"Clic enviado para {search_num}")
-                    time.sleep(0.5)
+                    # Actualizar fotograma espejo inmediatamente
+                    st.session_state.last_frame = controller.take_screenshot()
+                    st.session_state.last_action_msg = f"Ticket {search_num} abierto en la pestaña origen"
+                    st.success(f"¡Ticket {search_num} abierto con éxito!")
+                    time.sleep(0.3)
                     st.rerun()
 
-    # LISTA DE TICKETS DETECTADOS AUTOMÁTICAMENTE CON BOTÓN DE POSICIONAMIENTO INDIVIDUAL
+    # LISTA DE TICKETS DETECTADOS AUTOMÁTICAMENTE
     if st.session_state.detected_tickets:
         st.markdown(f"**Tickets disponibles en la tabla (`{len(st.session_state.detected_tickets)}`):**")
         for idx, t in enumerate(st.session_state.detected_tickets):
@@ -293,23 +313,17 @@ with col_ctrl:
                 </div>
                 """, unsafe_allow_html=True)
 
-                if st.button(f"🖱️ Posicionar Mouse y Abrir {t_num}", key=f"btn_open_pos_{t_num}_{idx}", use_container_width=True):
-                    with st.spinner(f"Posicionando mouse en {t_num}..."):
+                if st.button(f"👉 Abrir {t_num}", key=f"btn_open_pos_{t_num}_{idx}", use_container_width=True):
+                    with st.spinner(f"Abriendo {t_num} en la pestaña origen..."):
                         res = controller.locate_and_open_ticket(t_num)
-                        if res.get("found"):
-                            st.session_state.last_action_msg = f"Mouse posicionado en X={res.get('x',0):.1f}, Y={res.get('y',0):.1f} sobre {t_num}"
-                            st.success(f"¡Ticket {t_num} abierto exitosamente!")
-                        else:
-                            st.session_state.last_action_msg = f"Clic enviado a {t_num}"
-                        time.sleep(0.5)
+                        # Actualizar fotograma espejo inmediatamente
+                        st.session_state.last_frame = controller.take_screenshot()
+                        st.session_state.last_action_msg = f"Ticket {t_num} abierto"
+                        st.success(f"¡Ticket {t_num} abierto!")
+                        time.sleep(0.3)
                         st.rerun()
     else:
         st.info("💡 Enlaza tu pestaña de ServiceNow en el panel izquierdo; el escaneo se realiza automáticamente.")
-
-    # Acordeón opcional de diagnóstico/logs de escaneo en la interfaz
-    if st.session_state.last_scan_logs:
-        with st.expander("📋 Ver Diagnóstico / Log de Escaneo (Consola)", expanded=False):
-            st.code("\n".join(st.session_state.last_scan_logs), language="text")
 
     st.divider()
 
@@ -320,16 +334,19 @@ with col_ctrl:
     with b1:
         if st.button("⬆️ Subir", use_container_width=True):
             controller.scroll("up", 400)
+            st.session_state.last_frame = controller.take_screenshot()
             st.session_state.last_action_msg = "Scroll hacia arriba (-400px)"
             st.rerun()
     with b2:
         if st.button("⬇️ Bajar", use_container_width=True):
             controller.scroll("down", 400)
+            st.session_state.last_frame = controller.take_screenshot()
             st.session_state.last_action_msg = "Scroll hacia abajo (+400px)"
             st.rerun()
     with b3:
         if st.button("🔄 Recargar", use_container_width=True):
             controller.reload()
+            st.session_state.last_frame = controller.take_screenshot()
             st.session_state.last_action_msg = "Pestaña recargada"
             st.rerun()
     with b4:
@@ -348,6 +365,7 @@ with col_ctrl:
             done = controller.click_element("[data-tab-name*='notes']") or \
                    controller.click_element("button:has-text('Notes')") or \
                    controller.click_element("Notes")
+            st.session_state.last_frame = controller.take_screenshot()
             st.session_state.last_action_msg = "Clic en Notes" if done else "Selector de Notes no encontrado"
             st.rerun()
     with sn2:
@@ -355,6 +373,7 @@ with col_ctrl:
             done = controller.click_element("button#sysverb_update") or \
                    controller.click_element("button:has-text('Update')") or \
                    controller.click_element("Update")
+            st.session_state.last_frame = controller.take_screenshot()
             st.session_state.last_action_msg = "Clic en Guardar/Update" if done else "Botón Update no encontrado"
             st.rerun()
 
@@ -367,16 +386,17 @@ with col_view:
     if st.session_state.selected_tab_id and controller.current_tab_id != st.session_state.selected_tab_id:
         controller.current_tab_id = st.session_state.selected_tab_id
 
-    screenshot_bytes = controller.take_screenshot()
-    if screenshot_bytes:
-        st.session_state.last_frame = screenshot_bytes
+    # Actualizar frame si no hay en memoria
+    if not st.session_state.last_frame:
+        st.session_state.last_frame = controller.take_screenshot()
 
-    frame_to_show = screenshot_bytes or st.session_state.last_frame
+    frame_to_show = st.session_state.last_frame
 
     if frame_to_show:
         image = Image.open(BytesIO(frame_to_show))
         st.image(image, caption=f"Pestaña enlazada: {st.session_state.selected_tab_title or 'En vivo'}", use_container_width=True)
         if st.button("📸 Actualizar Vista Espejo", use_container_width=True):
+            st.session_state.last_frame = controller.take_screenshot()
             st.rerun()
     else:
         st.info("Elige tu pestaña en el panel izquierdo y haz clic en **'⚡ Enlazar'** para ver su vista en vivo aquí.")

@@ -1,7 +1,7 @@
 """
 tab_engine.py
 Motor híbrido de descubrimiento y control de pestañas vía Chrome DevTools Protocol (CDP).
-Apertura física de tickets garantizada en la PESTAÑA ORIGEN del navegador.
+Apertura física de tickets garantizada en la PESTAÑA ORIGEN (disparo único) y función Volver.
 """
 
 import json
@@ -120,16 +120,9 @@ class CDPBrowserController:
         return True
 
     def scan_tickets_with_diagnostics(self) -> Dict[str, Any]:
-        """
-        Escanea la tabla de ServiceNow en la pestaña origen y genera logs en consola.
-        """
-        print("\n" + "="*50)
-        print("🔍 [ESCANEO AUTOMÁTICO EN PESTAÑA ORIGEN DE SERVICENOW]")
-        print("="*50)
-
+        """Escanea la tabla de ServiceNow en la pestaña origen y genera logs en consola."""
         client = self._get_active_native_client()
         if not client:
-            print("[ERROR] No hay cliente CDP nativo conectado para la pestaña actual.")
             return {
                 "tickets": [],
                 "totalQueueText": "Error: Navegador desconectado",
@@ -140,29 +133,38 @@ class CDPBrowserController:
         tickets = diag.get("tickets", [])
         queue_text = diag.get("totalQueueText", "")
 
-        print(f"📊 [RESULTADO] Tickets detectados: {len(tickets)} | Estado de la cola: {queue_text}")
+        print(f"\n📊 [ESCANEO] Tickets: {len(tickets)} | Cola: {queue_text}")
         for idx, t in enumerate(tickets, 1):
-            print(f"   {idx}. {t.get('number')} (Sys_ID: {t.get('sys_id', 'N/A')[:10]}...) -> {t.get('description', '')[:50]}")
-        print("="*50 + "\n")
+            print(f"   {idx}. {t.get('number')} -> {t.get('description', '')[:50]}")
 
         return diag
 
     def locate_and_open_ticket(self, ticket_number: str) -> Dict[str, Any]:
-        """
-        PASO 2: Apertura en la PESTAÑA ORIGEN real del navegador.
-        """
-        print(f"\n🎯 [PASO 2: ABRIR TICKET EN PESTAÑA ORIGEN] Objetivo: {ticket_number}")
+        """PASO 2: Apertura única y sincronizada del ticket."""
+        print(f"\n🎯 [PASO 2: APERTURA ÚNICA] Objetivo: {ticket_number}")
         client = self._get_active_native_client()
         if not client:
-            print("[ERROR] Cliente no disponible.")
             return {"found": False, "error": "Cliente no disponible"}
 
         result = client.locate_and_open_ticket(ticket_number)
-        
-        # Esperar a que la página de ServiceNow cargue el formulario en la pestaña origen
-        time.sleep(1.8)
-        self.take_screenshot()
+
+        # Esperar carga del formulario y capturar inmediatamente el nuevo frame para la vista espejo
+        time.sleep(1.2)
+        fresh_frame = self.take_screenshot()
+        result["has_fresh_frame"] = fresh_frame is not None
         return result
+
+    def go_back_to_list(self) -> bool:
+        """Regresa a la vista anterior (lista de tickets) y actualiza el espejo."""
+        print("\n🔙 [ACCIÓN] Regresando a la vista anterior...")
+        client = self._get_active_native_client()
+        if not client:
+            return False
+
+        success = client.go_back()
+        time.sleep(1.2)
+        self.take_screenshot()
+        return success
 
     def scroll(self, direction: str = "down", amount: int = 400) -> bool:
         """Realiza scroll hacia arriba o hacia abajo en la pestaña activa."""
