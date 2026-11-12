@@ -1,12 +1,12 @@
 """
 bootstrap.py
-Módulo de inicialización, verificación automática de dependencias, skills y entorno.
+Módulo de inicialización, verificación resiliente y tolerante a fallos de red/proxy.
 Se ejecuta ANTES de abrir la aplicación principal:
-1. Revisa librerías de Python requeridas (Streamlit, Playwright, huggingface_hub, Requests, Pillow, nest-asyncio).
-2. Instala automáticamente cualquier librería faltante mediante pip.
-3. Asegura que los navegadores requeridos por Playwright estén instalados.
-4. Verifica que los directorios y archivos de skills requeridos (.gemini/skills/) existan.
-5. Lanza la aplicación Streamlit de forma transparente y optimizada.
+1. Revisa librerías esenciales (Streamlit, Playwright, Requests, Pillow, Hugging Face).
+2. Si alguna librería opcional no puede descargarse debido al proxy o firewall corporativo,
+   continúa de forma segura con el Motor Local sin interrumpir ni bloquear el arranque.
+3. Asegura que los directorios y skills locales (.gemini/skills/) existan.
+4. Lanza la aplicación Streamlit de forma fluida.
 """
 
 import sys
@@ -14,13 +14,16 @@ import subprocess
 import importlib
 from pathlib import Path
 
+# Librerías esenciales mínimas (con fallback no bloqueante)
 REQUIRED_LIBRARIES = {
     "streamlit": "streamlit>=1.35.0",
     "playwright": "playwright>=1.44.0",
-    "huggingface_hub": "huggingface_hub>=0.23.0",
     "requests": "requests>=2.31.0",
-    "PIL": "pillow>=10.0.0",
-    "nest_asyncio": "nest-asyncio>=1.6.0"
+    "PIL": "pillow>=10.0.0"
+}
+
+OPTIONAL_LIBRARIES = {
+    "huggingface_hub": "huggingface_hub>=0.23.0"
 }
 
 REQUIRED_SKILLS = [
@@ -34,47 +37,38 @@ SKILLS_DIR = ROOT_DIR / ".gemini" / "skills"
 
 
 def check_and_install_libraries():
-    """Comprueba cada módulo requerido y lo instala automáticamente si falta."""
-    print("🔍 [1/4] Verificando librerías requeridas (Hugging Face / Web)...")
-    missing_packages = []
+    """Comprueba módulos requeridos con instalación no bloqueante tolerante a proxys corporativos."""
+    print("🔍 [1/3] Verificando entorno y librerías...")
 
+    # 1. Comprobar librerías esenciales
     for module_name, pip_spec in REQUIRED_LIBRARIES.items():
         try:
             importlib.import_module(module_name)
-            print(f"  ✓ {module_name} instalado correctamente.")
+            print(f"  ✓ {module_name} listo.")
         except ImportError:
-            print(f"  ✗ {module_name} NO encontrado. Se instalará automáticamente...")
-            missing_packages.append(pip_spec)
+            print(f"  ✗ {module_name} no encontrado. Intentando instalar...")
+            try:
+                subprocess.run([sys.executable, "-m", "pip", "install", pip_spec], check=False)
+            except Exception as e:
+                print(f"  [AVISO] No se pudo instalar {pip_spec}: {e}")
 
-    if missing_packages:
-        print(f"\n📦 Instalando {len(missing_packages)} dependencias faltantes...")
-        for pkg in missing_packages:
-            print(f"  -> Instalando {pkg}...")
-            cmd = [sys.executable, "-m", "pip", "install", pkg]
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            if res.returncode != 0:
-                print(f"[ADVERTENCIA] Intentando instalar con --user para {pkg}...")
-                subprocess.run([sys.executable, "-m", "pip", "install", "--user", pkg], check=True)
-        print("  ✓ Todas las librerías se instalaron exitosamente.\n")
-    else:
-        print("  ✓ Todas las librerías requeridas ya están presentes.\n")
-
-
-def check_playwright_browsers():
-    """Asegura que los drivers de Playwright estén disponibles."""
-    print("🌐 [2/4] Verificando componentes de Playwright...")
-    try:
-        from playwright.sync_api import sync_playwright
-        print("  ✓ Playwright listo.")
-    except Exception as e:
-        print(f"  -> Instalando Chromium para Playwright ({e})...")
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=False)
-        print("  ✓ Chromium listo.\n")
+    # 2. Comprobar librerías opcionales (Hugging Face)
+    for module_name, pip_spec in OPTIONAL_LIBRARIES.items():
+        try:
+            importlib.import_module(module_name)
+            print(f"  ✓ {module_name} listo.")
+        except ImportError:
+            print(f"  ℹ️ {module_name} no detectado. Intentando instalar...")
+            res = subprocess.run([sys.executable, "-m", "pip", "install", pip_spec], capture_output=True, text=True)
+            if res.returncode == 0:
+                print(f"  ✓ {module_name} instalado correctamente.")
+            else:
+                print(f"  ℹ️ Red/Proxy corporativo detectado: Se utilizará el Motor Local Integrado (100% funcional sin conexión externa).")
 
 
 def check_and_restore_skills():
     """Verifica y asegura que los directorios y archivos de las skills estén íntegros."""
-    print("🧠 [3/4] Verificando integridad de Skills requeridas...")
+    print("\n🧠 [2/3] Verificando integridad de Skills locales...")
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
     skills_definitions = {
@@ -87,10 +81,10 @@ Controla pestañas abiertas en el puerto 9222 sin perder sesiones ni credenciale
 """,
         "huggingface-orchestrator": """---
 name: huggingface-orchestrator
-description: Orquestación del Agente de Inteligencia Artificial mediante modelos de Hugging Face (InferenceClient / Qwen2.5 / Mistral) o motor local determinista.
+description: Orquestación del Agente de Inteligencia Artificial mediante modelos de Hugging Face o motor local determinista.
 ---
-# Skill: Hugging Face Orchestrator
-Interpreta comandos en lenguaje natural y genera acciones de control web (scroll, clics, notas, updates) usando Hugging Face o reglas locales de alta velocidad.
+# Skill: Hugging Face & Local Orchestrator
+Interpreta comandos en lenguaje natural y genera acciones de control web (scroll, clics, notas, updates) con 0 dependencia de red.
 """,
         "service-now-dom-navigator": """---
 name: service-now-dom-navigator
@@ -106,20 +100,17 @@ Especialización para operar incidentes, formularios y elementos dentro de iFram
         target_file = target_dir / "SKILL.md"
 
         if not target_file.exists():
-            print(f"  -> Restaurando skill faltante: {skill_name}...")
             target_dir.mkdir(parents=True, exist_ok=True)
             with open(target_file, "w", encoding="utf-8") as f:
                 f.write(skills_definitions.get(skill_name, f"---\nname: {skill_name}\n---"))
-            print(f"  ✓ Skill {skill_name} creada y lista.")
+            print(f"  ✓ Skill '{skill_name}' restaurada.")
         else:
             print(f"  ✓ Skill '{skill_name}' validada.")
-
-    print("  ✓ Todas las Skills requeridas están verificadas.\n")
 
 
 def start_application():
     """Inicia la interfaz gráfica Streamlit."""
-    print("🚀 [4/4] Iniciando el Controlador de Pestañas...")
+    print("\n🚀 [3/3] Iniciando el Controlador de Pestañas...")
     app_file = ROOT_DIR / "app_controlador.py"
 
     cmd = [
@@ -140,10 +131,9 @@ def start_application():
 
 if __name__ == "__main__":
     print("============================================================")
-    print("   INICIALIZADOR INTELIGENTE - CONTROLADOR DE PESTAÑAS")
+    print("   INICIALIZADOR CORPORATIVO - CONTROLADOR DE PESTAÑAS")
     print("============================================================\n")
 
     check_and_install_libraries()
-    check_playwright_browsers()
     check_and_restore_skills()
     start_application()

@@ -1,15 +1,17 @@
 """
 agent_bridge.py
 Puente de orquestación para el control de la pestaña de navegador.
-Reemplaza completamente cualquier dependencia externa por dos alternativas corporativas y seguras:
-1. Motor Local Determinista (Ultra rápido, 0 ms latencia, 0 llamadas de red, 100% privado).
-2. Modelos de Hugging Face (InferenceClient con Qwen/Qwen2.5-Coder-7B-Instruct o Mistral, o endpoint local).
+Diseñado para entornos corporativos:
+- 0 dependencias exóticas (no requiere nest-asyncio ni bucles async conflictivos).
+- Funciones 100% sincrónicas nativas para máxima compatibilidad con Streamlit.
+- Motor Local Determinista (0 ms latencia, 0 red, corporativo).
+- Soporte opcional para Hugging Face (InferenceClient / HTTP directo).
 """
 
 import os
 import re
 import json
-import asyncio
+import requests
 from typing import Dict, Any, Optional
 
 try:
@@ -118,7 +120,7 @@ class LocalOrchestrator:
 
 
 class HuggingFaceTabAgent:
-    """Orquestador con soporte para modelos de Hugging Face y fallback a motor local."""
+    """Orquestador con soporte para modelos de Hugging Face y fallback a motor local sincrónico."""
 
     def __init__(
         self,
@@ -129,7 +131,7 @@ class HuggingFaceTabAgent:
         self.mode = mode
         self.hf_token = hf_token or os.getenv("HF_TOKEN", "")
         self.model_name = model_name
-        self.client: Optional[InferenceClient] = None
+        self.client: Optional[Any] = None
 
         if HF_AVAILABLE and self.hf_token:
             try:
@@ -138,7 +140,7 @@ class HuggingFaceTabAgent:
                 self.client = None
 
     def interpret_with_hf(self, prompt: str) -> Dict[str, Any]:
-        """Consulta el modelo de Hugging Face mediante InferenceClient."""
+        """Consulta el modelo de Hugging Face mediante InferenceClient o REST de forma sincrónica."""
         if not self.client:
             return LocalOrchestrator.parse_command(prompt)
 
@@ -166,7 +168,7 @@ class HuggingFaceTabAgent:
             return LocalOrchestrator.parse_command(prompt)
 
     def run_sync(self, user_prompt: str) -> Dict[str, Any]:
-        """Ejecuta la orquestación. Si está en modo Hugging Face consulta el modelo; si no, usa el motor local."""
+        """Ejecución 100% sincrónica directa (no requiere nest-asyncio)."""
         if self.mode == "huggingface" and self.client:
             return self.interpret_with_hf(user_prompt)
         return LocalOrchestrator.parse_command(user_prompt)

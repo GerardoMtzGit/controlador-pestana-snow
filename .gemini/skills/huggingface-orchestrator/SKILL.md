@@ -16,3 +16,4 @@ Esta habilidad estandariza la orquestación del asistente sin librerías externa
 - `click` (con soporte para selectores de ServiceNow: notas, update, assignment group).
 - `type` (ingreso en inputs y textareas).
 - `reload` (recargar pestaña).
+
