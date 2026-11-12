@@ -147,3 +147,4 @@ if __name__ == "__main__":
     check_playwright_browsers()
     check_and_restore_skills()
     start_application()
+

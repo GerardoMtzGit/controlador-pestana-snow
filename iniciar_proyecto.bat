@@ -16,3 +16,4 @@ if %ERRORLEVEL% NEQ 0 (
     echo [ADVERTENCIA] El iniciador detecto un error. Presiona una tecla para cerrar...
     pause >nul
 )
+

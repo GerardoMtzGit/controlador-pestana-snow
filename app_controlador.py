@@ -6,7 +6,7 @@ Permite:
 - Seleccionar una pestaña (ej. ServiceNow).
 - Mover la pestaña (Scroll Arriba / Abajo, Click en botones, Recargar).
 - Vista previa en vivo con captura de pantalla.
-- Comando inteligente vía Google Antigravity SDK en lenguaje natural.
+- Comando inteligente vía Orquestador Local (motor de reglas instantáneo o LLM local).
 """
 
 import time
@@ -30,7 +30,7 @@ if "controller" not in st.session_state:
     st.session_state.controller = CDPBrowserController(port=9222)
 
 if "agent" not in st.session_state:
-    st.session_state.agent = AntigravityTabAgent()
+    st.session_state.agent = AntigravityTabAgent(mode="local_rules")
 
 if "selected_tab_id" not in st.session_state:
     st.session_state.selected_tab_id = None
@@ -61,6 +61,7 @@ st.markdown("""
     }
     .status-ok { background: #dcfce7; color: #15803d; }
     .status-warn { background: #fef3c7; color: #b45309; }
+    .status-info { background: #e0f2fe; color: #0369a1; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -69,12 +70,12 @@ st.markdown("""
 <div class="header-box">
     <h2 style="margin:0; font-size:1.5rem; font-weight:700;">🎯 Controlador de Pestañas Web (ServiceNow / Chrome)</h2>
     <p style="margin:4px 0 0 0; font-size:0.9rem; color:#94a3b8;">
-        Selecciona cualquier pestaña de tu navegador abierto y contrólala directamente desde esta interfaz con Google Antigravity SDK.
+        Controla y mueve la pestaña seleccionada directamente desde esta interfaz con <strong>orquestación 100% local</strong>.
     </p>
 </div>
 """, unsafe_allow_html=True)
 
-# SIDEBAR: Conexión y Selección de Pestañas
+# SIDEBAR: Conexión, Configuración Local y Selección de Pestañas
 with st.sidebar:
     st.header("🔌 Conexión de Navegador")
     is_connected = controller.is_cdp_available()
@@ -93,15 +94,35 @@ with st.sidebar:
                 st.error(f"Error al abrir: {e}")
 
     st.divider()
+
+    # Selector de Motor de Orquestación Local
+    st.subheader("⚙️ Motor de Orquestación")
+    engine_choice = st.selectbox(
+        "Modo de orquestación:",
+        options=["Motor Local Determinista (Ultra rápido, 0 red)", "LLM Local (Ollama / LocalOpenAI)"],
+        index=0
+    )
+
+    if "LLM Local" in engine_choice:
+        agent.mode = "local_llm"
+        ollama_ok = agent.is_ollama_online()
+        if ollama_ok:
+            st.markdown('<span class="status-badge status-ok">● Ollama Local Activo</span>', unsafe_allow_html=True)
+        else:
+            st.markdown('<span class="status-badge status-warn">▲ Ollama no detectado en :11434</span>', unsafe_allow_html=True)
+            st.caption("Usa 'ollama serve' para iniciar tu modelo local, o mantén el Motor Local.")
+    else:
+        agent.mode = "local_rules"
+        st.markdown('<span class="status-badge status-info">● Motor de Reglas Local Activo</span>', unsafe_allow_html=True)
+
+    st.divider()
     st.subheader("📑 Seleccionar Pestaña")
 
     tabs = controller.list_tabs() if is_connected else []
 
     if tabs:
-        # Formatear opciones para el selector
         tab_options = {f"{t.title[:45]} ({t.url[:35]}...)": t.tab_id for t in tabs}
         
-        # Preseleccionar ServiceNow si existe
         default_index = 0
         for i, t in enumerate(tabs):
             if any(k in t.url.lower() or k in t.title.lower() for k in ["service-now", "servicenow", "incident", "task"]):
@@ -119,7 +140,7 @@ with st.sidebar:
             success = controller.select_tab_by_id(selected_id)
             if success:
                 st.session_state.selected_tab_id = selected_id
-                st.session_state.last_action_msg = f"Enlazado a pestaña: {selected_label}"
+                st.session_state.last_action_msg = f"Enlazado a: {selected_label}"
                 st.success("¡Pestaña enlazada correctamente!")
                 time.sleep(0.5)
                 st.rerun()
@@ -141,7 +162,7 @@ col_left, col_right = st.columns([1, 1], gap="medium")
 with col_left:
     st.subheader("🎮 Controles de la Pestaña")
 
-    # Botones rápidos de movimiento
+    # Botones directos de movimiento
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         if st.button("⬆️ Subir", use_container_width=True):
@@ -171,7 +192,6 @@ with col_left:
     sn1, sn2 = st.columns(2)
     with sn1:
         if st.button("📝 Ir a Pestaña Notes", use_container_width=True):
-            # Intentar selectores de la pestaña notas
             done = controller.click_element("[data-tab-name*='notes']") or \
                    controller.click_element("button:has-text('Notes')") or \
                    controller.click_element("span.tab_caption_text:has-text('Notes')")
@@ -187,35 +207,35 @@ with col_left:
 
     st.divider()
 
-    # Control por Lenguaje Natural con Antigravity SDK
-    st.markdown("#### 🤖 Control Asistido con Antigravity SDK")
+    # Control por Lenguaje Natural con Orquestador Local
+    st.markdown("#### 🤖 Orquestador Asistido Local (0 llamadas a la nube)")
     prompt = st.text_input(
         "Indica una acción en lenguaje natural:",
-        placeholder="Ej: 'baja hasta el final', 'sube 300px', 'haz clic en Notes'..."
+        placeholder="Ej: 'baja 500px', 'sube', 'haz clic en Notes', 'guardar'..."
     )
 
-    if st.button("✨ Ejecutar con Agente IA", use_container_width=True):
+    if st.button("✨ Ejecutar Acción Local", use_container_width=True):
         if prompt:
-            with st.spinner("Interpretando acción con Antigravity SDK..."):
-                action_data = agent.run_sync(prompt)
-                act = action_data.get("action", "")
-                
-                if act == "scroll":
-                    direction = action_data.get("direction", "down")
-                    amt = action_data.get("amount", 400)
-                    controller.scroll(direction, amt)
-                    st.session_state.last_action_msg = f"Agente ejecutó: Scroll {direction} ({amt}px)"
-                elif act == "click":
-                    sel = action_data.get("selector", "")
-                    done = controller.click_element(sel)
-                    st.session_state.last_action_msg = f"Agente clic en: {sel} ({'Éxito' if done else 'No hallado'})"
-                elif act == "reload":
-                    controller.reload()
-                    st.session_state.last_action_msg = "Agente ejecutó: Recarga"
-                elif act == "answer":
-                    st.info(action_data.get("message", ""))
-                
-                st.rerun()
+            action_data = agent.run_sync(prompt)
+            act = action_data.get("action", "")
+            engine_used = action_data.get("engine", "local")
+            
+            if act == "scroll":
+                direction = action_data.get("direction", "down")
+                amt = action_data.get("amount", 400)
+                controller.scroll(direction, amt)
+                st.session_state.last_action_msg = f"[{engine_used}] Scroll {direction} ({amt}px)"
+            elif act == "click":
+                sel = action_data.get("selector", "")
+                done = controller.click_element(sel)
+                st.session_state.last_action_msg = f"[{engine_used}] Clic en: {sel} ({'Éxito' if done else 'No hallado'})"
+            elif act == "reload":
+                controller.reload()
+                st.session_state.last_action_msg = f"[{engine_used}] Recarga completada"
+            elif act == "answer":
+                st.info(action_data.get("message", ""))
+            
+            st.rerun()
 
     st.caption(f"Última acción: **{st.session_state.last_action_msg}**")
 
@@ -223,11 +243,9 @@ with col_left:
 with col_right:
     st.subheader("📺 Vista Previa en Vivo de la Pestaña")
     
-    # Capturar pantalla actual si hay una pestaña seleccionada
     screenshot_bytes = controller.take_screenshot()
     if screenshot_bytes:
         image = Image.open(BytesIO(screenshot_bytes))
         st.image(image, caption="Pestaña activa en tiempo real", use_container_width=True)
     else:
         st.warning("Selecciona y activa una pestaña desde el panel lateral izquierdo para ver su contenido en vivo aquí.")
-
