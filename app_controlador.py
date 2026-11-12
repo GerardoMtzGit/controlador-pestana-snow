@@ -17,6 +17,7 @@ import pandas as pd
 import streamlit as st
 from tab_engine import CDPBrowserController, TabInfo
 from agent_bridge import HuggingFaceTabAgent
+from classifier_engine import TicketClassifierEngine, DEFAULT_ROUTING_MARKDOWN
 
 
 st.set_page_config(
@@ -62,6 +63,15 @@ if "extracted_ticket_data" not in st.session_state:
 
 if "saved_tickets_list" not in st.session_state:
     st.session_state.saved_tickets_list = []
+
+if "routing_markdown" not in st.session_state:
+    st.session_state.routing_markdown = DEFAULT_ROUTING_MARKDOWN
+
+if "classifier_engine" not in st.session_state:
+    st.session_state.classifier_engine = TicketClassifierEngine(st.session_state.routing_markdown)
+
+if "routing_decisions" not in st.session_state:
+    st.session_state.routing_decisions = []
 
 controller: CDPBrowserController = st.session_state.controller
 agent: HuggingFaceTabAgent = st.session_state.agent
@@ -501,6 +511,67 @@ with col_ctrl:
         )
     else:
         st.info("💡 Abre un ticket en el Paso 2 o presiona **'📥 Extraer Campos Generales'** y **'📂 Abrir Tab User Submitted Fields'** para registrar todos los campos en la tabla.")
+
+    st.divider()
+
+    # ================= FEATURE: PASO 4 - CLASIFICACIÓN Y ENRUTAMIENTO INTELIGENTE =================
+    st.markdown("### 🧠 Paso 4: Clasificación y Enrutamiento de Cola (Queue)")
+    st.caption("Compara la descripción del ticket contra las directrices en Markdown para sugerir la Cola (Queue) de destino y una Posible Solución.")
+
+    # Visualizador y Editor de Markdown
+    with st.expander("📄 Ver / Modificar Guía de Reglas en Markdown", expanded=False):
+        st.info("Puedes pegar aquí tus directrices en formato Markdown o modificarlas libremente. El motor reevaluará las colas y soluciones automáticamente.")
+        new_md = st.text_area(
+            "Directrices y Reglas Markdown:",
+            value=st.session_state.routing_markdown,
+            height=260,
+            help="Pega aquí el contenido Markdown con los Queues, palabras clave y posibles soluciones."
+        )
+        if new_md != st.session_state.routing_markdown:
+            st.session_state.routing_markdown = new_md
+            st.session_state.classifier_engine.update_rules_from_markdown(new_md)
+            st.success("¡Reglas Markdown actualizadas!")
+
+    col_run_p4, col_clear_p4 = st.columns([2, 1])
+    with col_run_p4:
+        if st.button("🚀 Evaluar y Enrutar Tickets (Paso 4)", type="primary", use_container_width=True):
+            # Priorizar tickets completos extraídos en Paso 3, o los detectados en la tabla de Paso 2
+            tickets_to_eval = st.session_state.saved_tickets_list or st.session_state.detected_tickets
+            if tickets_to_eval:
+                with st.spinner("Comparando descripciones contra las directrices Markdown..."):
+                    decisions = st.session_state.classifier_engine.classify_all_tickets(tickets_to_eval)
+                    st.session_state.routing_decisions = decisions
+                    st.session_state.last_action_msg = f"{len(decisions)} ticket(s) enrutados en Paso 4"
+                    st.rerun()
+            else:
+                st.warning("No hay tickets disponibles para clasificar. Abre un ticket o enlaza la pestaña en el panel izquierdo.")
+
+    with col_clear_p4:
+        if st.button("🗑️ Limpiar Decisiones", use_container_width=True):
+            st.session_state.routing_decisions = []
+            st.session_state.last_action_msg = "Decisiones de Paso 4 limpiadas"
+            st.rerun()
+
+    # TABLA DE DECISIONES DE ENRUTAMIENTO (PASO 4)
+    if st.session_state.routing_decisions:
+        df_routing = pd.DataFrame(st.session_state.routing_decisions)
+        routing_cols = ["Número de Ticket", "Descripción", "Posible Queue", "Posible Solución", "Confianza"]
+        present_r_cols = [c for c in routing_cols if c in df_routing.columns]
+        df_routing = df_routing[present_r_cols]
+
+        st.markdown(f"**Tabla de Enrutamiento y Posibles Soluciones (`{len(df_routing)}`):**")
+        st.dataframe(df_routing, use_container_width=True)
+
+        csv_routing_bytes = df_routing.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="💾 Descargar Tabla de Enrutamiento en CSV",
+            data=csv_routing_bytes,
+            file_name="enrutamiento_tickets_servicenow.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    else:
+        st.info("💡 Haz clic en **'🚀 Evaluar y Enrutar Tickets (Paso 4)'** para analizar los tickets y generar la tabla con el Número de Ticket, Descripción, Posible Queue y Posible Solución.")
 
     st.caption(f"Última acción: **{st.session_state.last_action_msg}**")
 
